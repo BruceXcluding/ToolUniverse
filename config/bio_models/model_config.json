@@ -1,0 +1,124 @@
+{
+  "model_base_path": "${MODEL_BASE_PATH:./models}",
+  "task_mapping": {
+    "embedding": {
+      "default_model": "lucaone",
+      "DNA": "dnabert_2",
+      "RNA": "rna-fm",
+      "protein": "lucaone"
+    },
+    "classification": {
+      "default_model": "lucaone",
+      "DNA": "3utrbert",
+      "RNA": "rna-fm",
+      "protein": "lucaone"
+    },
+    "generation": {
+      "default_model": "lucaone",
+      "DNA": "codonbert",
+      "RNA": "rna-fm",
+      "protein": "lucaone"
+    },
+    "property_prediction": {
+      "default_model": "lucaone",
+      "DNA": "dnabert_2",
+      "RNA": "rna-fm",
+      "protein": "lucaone"
+    },
+    "structure_prediction": {
+      "default_model": "alphafold",
+      "protein": "alphafold",
+      "RNA": "rna-fm"
+    },
+    "interaction": {
+      "default_model": "lucaone",
+      "DNA": "dnabert_2",
+      "RNA": "rna-fm",
+      "protein": "lucaone"
+    },
+    "annotation": {
+      "default_model": "lucaone",
+      "DNA": "dnabert_2",
+      "RNA": "rna-fm",
+      "protein": "lucaone"
+    },
+    "translation": {
+      "default_model": "utr-lm",
+      "RNA": "utr-lm"
+    }
+  },
+  "models": {
+    "lucaone": {
+      "model_path": "${MODEL_BASE_PATH:./models}/LucaOne",
+      "supported_tasks": ["embedding", "classification", "property_prediction", "interaction", "annotation", "generation"],
+      "supported_sequences": ["DNA", "RNA", "protein"],
+      "memory_requirement": 8192,
+      "max_sequence_length": 1024,
+      "description": "Generalized Biological Foundation Model with Unified Nucleic Acid and Protein Language"
+    },
+    "lucaoneapp": {
+      "model_path": "${MODEL_BASE_PATH:./models}/LucaOneApp",
+      "supported_tasks": ["embedding"],
+      "supported_sequences": ["DNA", "RNA", "protein"],
+      "memory_requirement": 8192,
+      "max_sequence_length": 1024,
+      "description": "Embedding inference using LucaOne"
+    },
+    "lucaonetasks": {
+      "model_path": "${MODEL_BASE_PATH:./models}/LucaOneTasks",
+      "supported_tasks": ["classification", "property_prediction", "interaction", "annotation"],
+      "supported_sequences": ["DNA", "RNA", "protein"],
+      "memory_requirement": 8192,
+      "max_sequence_length": 1024,
+      "description": "Downstream tasks using LucaOne embeddings"
+    },
+    "3utrbert": {
+      "model_path": "${MODEL_BASE_PATH:./models}/3UTRBERT",
+      "supported_tasks": ["embedding", "classification", "annotation"],
+      "supported_sequences": ["DNA"],
+      "memory_requirement": 4096,
+      "max_sequence_length": 512,
+      "description": "BERT model for 3' UTR sequences"
+    },
+    "alphafold": {
+      "model_path": "${MODEL_BASE_PATH:./models}/alphafold",
+      "supported_tasks": ["structure_prediction"],
+      "supported_sequences": ["protein"],
+      "memory_requirement": 16384,
+      "max_sequence_length": 1024,
+      "description": "Protein structure prediction using AlphaFold"
+    },
+    "codonbert": {
+      "model_path": "${MODEL_BASE_PATH:./models}/CodonBERT",
+      "supported_tasks": ["embedding", "generation", "property_prediction"],
+      "supported_sequences": ["DNA"],
+      "memory_requirement": 6144,
+      "max_sequence_length": 1024,
+      "description": "BERT model for codon optimization and mRNA design"
+    },
+    "dnabert_2": {
+      "model_path": "${MODEL_BASE_PATH:./models}/DNABERT_2",
+      "supported_tasks": ["embedding", "classification", "annotation", "property_prediction"],
+      "supported_sequences": ["DNA"],
+      "memory_requirement": 4096,
+      "max_sequence_length": 512,
+      "description": "DNABERT-2 with BPE tokenization and ALiBi position encoding"
+    },
+    "rna-fm": {
+      "model_path": "${MODEL_BASE_PATH:./models}/RNA-FM",
+      "supported_tasks": ["embedding", "classification", "structure_prediction", "generation", "property_prediction"],
+      "supported_sequences": ["RNA"],
+      "memory_requirement": 8192,
+      "max_sequence_length": 1024,
+      "description": "RNA Foundation Model trained on 23+ million non-coding RNA sequences"
+    },
+    "utr-lm": {
+      "model_path": "${MODEL_BASE_PATH:./models}/UTR-LM",
+      "supported_tasks": ["embedding", "translation", "property_prediction"],
+      "supported_sequences": ["RNA"],
+      "memory_requirement": 4096,
+      "max_sequence_length": 512,
+      "description": "Semi-supervised 5' UTR Language Model for mRNA translation and expression prediction"
+    }
+  }
+}

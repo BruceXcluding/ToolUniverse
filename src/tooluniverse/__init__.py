@@ -72,6 +72,9 @@ except ImportError:
     ) -> SMCP:
         raise ImportError("SMCP requires FastMCP. Install with: pip install fastmcp")
 
+# Import bio_models module
+from . import bio_models
+
 
 class _LazyImportProxy:
     """A proxy that lazily imports modules and returns the requested class only when accessed."""
@@ -389,6 +392,7 @@ __all__ = [
     "register_tool",
     "get_tool_registry",
     "tools",
+    "bio_models",
     "MonarchTool",
     "MonarchDiseasesForMultiplePhenoTool",
     "ClinicalTrialsSearchTool",
