@@ -212,6 +212,7 @@ Our comprehensive documentation covers everything from quick start to advanced w
 - **[Scientific Workflows](https://zitniklab.hms.harvard.edu/ToolUniverse/guide/scientific_workflows.html)**: Real-world research scenarios
 - **[MCP Support](https://zitniklab.hms.harvard.edu/ToolUniverse/guide/mcp_support.html)**: Model Context Protocol integration
 - **[Logging](https://zitniklab.hms.harvard.edu/ToolUniverse/guide/logging.html)**: Comprehensive logging configuration
+- **[Container Deployment](docker/README.md)**: Docker-based deployment for bio-sequence models with monitoring
 
 ### 🛠️ Advanced Features
 - **[Hooks System](https://zitniklab.hms.harvard.edu/ToolUniverse/guide/hooks/index.html)**: Intelligent output processing

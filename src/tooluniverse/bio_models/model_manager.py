@@ -5,12 +5,76 @@ import os
 import json
 import logging
 import re
-from typing import Dict, List, Optional, Union, Any
+import csv
+from datetime import datetime
+from typing import Dict, List, Optional, Union, Any, Tuple
+from dataclasses import dataclass
 import torch
 import psutil
 from .models.base_model import BaseModel
 from .task_types import TaskType, SequenceType, ModelStatus, DeviceType
 from .monitoring import get_logger, monitor_performance, monitor_context, metrics_collector
+from .container_runtime import ContainerRuntime, ContainerConfig, ContainerStatus
+from .container_client import ModelContainerClient, DNABERT2Client, LucaOneClient
+from .container_monitor import ContainerMonitor
+from .performance_collector import PerformanceCollector, PerformanceMetric
+from enum import Enum
+
+
+class ModelType(Enum):
+    """模型类型枚举"""
+    DNABERT2 = "dnabert2"
+    LUCAONE = "lucaone"
+    RNABERT = "rnabert"
+    UTRBERT = "utrbert"
+    CODONBERT = "codonbert"
+    RNFM = "rnfm"
+
+
+class DeploymentType(Enum):
+    """部署类型枚举"""
+    LOCAL = "local"
+    CONTAINER = "container"
+
+
+@dataclass
+class ModelConfig:
+    """模型配置"""
+    name: str
+    model_type: ModelType
+    model_path: str
+    config_path: Optional[str] = None
+    device: str = "auto"
+    max_memory: Optional[int] = None
+    deployment_type: DeploymentType = DeploymentType.LOCAL
+    container_config: Optional[Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        if self.container_config is None:
+            self.container_config = {}
+
+
+@dataclass
+class ContainerModelConfig:
+    """容器模型配置"""
+    name: str
+    model_type: ModelType
+    image: str
+    ports: Dict[str, int]
+    environment: Dict[str, str] = None
+    volumes: Dict[str, Dict[str, str]] = None
+    gpu_enabled: bool = False
+    memory_limit: str = "8g"
+    restart_policy: str = "unless-stopped"
+    healthcheck: Dict[str, Any] = None
+    
+    def __post_init__(self):
+        if self.environment is None:
+            self.environment = {}
+        if self.volumes is None:
+            self.volumes = {}
+        if self.healthcheck is None:
+            self.healthcheck = {}
 
 
 class ModelManager:
@@ -28,6 +92,28 @@ class ModelManager:
         self.loaded_models: Dict[str, BaseModel] = {}
         self.config = {}
         self.gpu_scheduler = GPUScheduler()
+        
+        # 初始化容器运行时
+        self.container_runtime = ContainerRuntime()
+        self.container_clients: Dict[str, ModelContainerClient] = {}
+        self.container_configs: Dict[str, ContainerModelConfig] = {}
+        
+        # 初始化容器监控
+        self.container_monitor = ContainerMonitor(
+            container_runtime=self.container_runtime,
+            metrics_collector=metrics_collector,
+            check_interval=30,
+            metrics_history_size=1000
+        )
+        
+        # 添加容器监控告警回调
+        self.container_monitor.add_alert_callback(self._handle_container_alert)  # 存储容器配置
+        
+        # 初始化性能收集器
+        self.performance_collector = PerformanceCollector()
+        
+        # 注册性能回调，将性能数据保存到文件
+        self.performance_collector.register_performance_callback(self._save_performance_metric)
         
         # 加载配置
         if config_path:
@@ -177,6 +263,38 @@ class ModelManager:
         Returns:
             Optional[str]: 最佳模型名称
         """
+        # 首先检查容器模型
+        for name, config in self.container_configs.items():
+            container_info = self.container_runtime.get_container_info(name)
+            if container_info and container_info.status == ContainerStatus.RUNNING:
+                # 检查模型是否支持指定的任务类型和序列类型
+                if task_type and task_type not in config.supported_tasks:
+                    continue
+                if sequence_type and sequence_type not in config.supported_sequences:
+                    continue
+                
+                return name
+        
+        # 然后检查本地模型
+        for name, config in self.model_configs.items():
+            # 检查模型是否支持指定的任务类型和序列类型
+            if task_type and task_type not in config.supported_tasks:
+                continue
+            if sequence_type and sequence_type not in config.supported_sequences:
+                continue
+            
+            # 如果模型已加载，优先返回
+            if name in self.loaded_models:
+                return name
+        
+        # 如果没有已加载的模型，返回第一个支持的模型
+        for name, config in self.model_configs.items():
+            if task_type and task_type not in config.supported_tasks:
+                continue
+            if sequence_type and sequence_type not in config.supported_sequences:
+                continue
+            return name
+        
         # 从配置中获取任务映射
         task_mapping = self.config.get("task_mapping", {})
         task_key = task_type.value
@@ -228,8 +346,12 @@ class ModelManager:
             
         if not model_name:
             return {"error": "没有找到合适的模型"}
+        
+        # 检查是否是容器模型
+        if model_name in self.container_clients:
+            return self._predict_with_container_model(model_name, sequences, task_type, sequence_type, **kwargs)
             
-        # 加载模型
+        # 加载本地模型
         if not self.load_model(model_name):
             return {"error": f"模型加载失败: {model_name}"}
             
@@ -267,13 +389,361 @@ class ModelManager:
             metrics_collector.add_model_metric(model_name, "prediction_failure", 1)
             return {"error": f"预测失败: {str(e)}"}
     
-    def list_models(self) -> List[str]:
-        """列出所有注册的模型"""
-        return list(self.models.keys())
+    def list_models(self) -> Dict[str, Any]:
+        """列出所有已注册的模型
+        
+        Returns:
+            Dict[str, Any]: 模型列表
+        """
+        # 获取本地模型
+        local_models = []
+        for name, model in self.models.items():
+            local_models.append({
+                "name": name,
+                "type": getattr(model, 'model_type', 'unknown'),
+                "is_loaded": name in self.loaded_models,
+                "deployment_type": "local"
+            })
+        
+        # 获取容器模型
+        container_models = []
+        for name, config in self.container_configs.items():
+            container_info = self.container_runtime.get_container_info(name)
+            status = container_info.status.value if container_info else "unknown"
+            container_models.append({
+                "name": name,
+                "type": config.model_type.value,
+                "status": status,
+                "deployment_type": "container",
+                "image": config.image
+            })
+        
+        return {
+            "local_models": local_models,
+            "container_models": container_models,
+            "total_local": len(local_models),
+            "total_container": len(container_models),
+            "total": len(local_models) + len(container_models)
+        }
     
-    def list_loaded_models(self) -> List[str]:
-        """列出所有已加载的模型"""
-        return list(self.loaded_models.keys())
+    def list_loaded_models(self) -> Dict[str, Any]:
+        """
+        列出所有已加载的模型
+        
+        Returns:
+            Dict[str, Any]: 已加载的模型列表
+        """
+        # 获取本地已加载的模型
+        local_loaded = []
+        for name in self.loaded_models:
+            model = self.models[name]
+            local_loaded.append({
+                "name": name,
+                "type": model.model_type.value,
+                "device": model.device,
+                "deployment_type": "local"
+            })
+        
+        # 获取运行中的容器模型
+        container_running = []
+        for name in self.container_clients:
+            container_info = self.container_runtime.get_container_info(name)
+            if container_info and container_info.status == ContainerStatus.RUNNING:
+                config = self.container_configs[name]
+                container_running.append({
+                    "name": name,
+                    "type": config.model_type.value,
+                    "image": config.image,
+                    "deployment_type": "container",
+                    "ports": config.ports
+                })
+        
+        return {
+            "local_loaded": local_loaded,
+            "container_running": container_running,
+            "total_local": len(local_loaded),
+            "total_container": len(container_running),
+            "total": len(local_loaded) + len(container_running)
+        }
+    
+    def register_container_model(self, config: ContainerModelConfig) -> bool:
+        """
+        注册容器模型
+        
+        Args:
+            config: 容器模型配置
+            
+        Returns:
+            bool: 是否注册成功
+        """
+        try:
+            with self.lock:
+                self.container_configs[config.name] = config
+                self.logger.info(f"容器模型注册成功: {config.name}")
+                return True
+        except Exception as e:
+            self.logger.error(f"容器模型注册失败: {config.name}, 错误: {e}")
+            return False
+    
+    def start_container_model(self, model_name: str) -> bool:
+        """
+        启动容器模型
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            bool: 是否启动成功
+        """
+        if model_name not in self.container_configs:
+            self.logger.error(f"容器模型配置不存在: {model_name}")
+            return False
+        
+        try:
+            config = self.container_configs[model_name]
+            
+            # 创建容器配置
+            container_config = ContainerConfig(
+                name=config.name,
+                image=config.image,
+                ports=config.ports,
+                environment=config.environment,
+                volumes=config.volumes,
+                gpu_enabled=config.gpu_enabled,
+                memory_limit=config.memory_limit,
+                restart_policy=config.restart_policy,
+                healthcheck=config.healthcheck
+            )
+            
+            # 启动容器
+            container_info = self.container_runtime.start_container(container_config)
+            
+            if not container_info:
+                self.logger.error(f"容器启动失败: {model_name}")
+                return False
+            
+            # 创建容器客户端
+            if container_info.api_endpoint:
+                if config.model_type == ModelType.DNABERT2:
+                    client = DNABERT2Client(container_info.api_endpoint)
+                elif config.model_type == ModelType.LUCAONE:
+                    client = LucaOneClient(container_info.api_endpoint)
+                else:
+                    client = ModelContainerClient(container_info.api_endpoint)
+                
+                self.container_clients[model_name] = client
+                
+                # 等待容器完全启动
+                time.sleep(5)
+                
+                # 检查健康状态
+                if client.health_check():
+                    self.logger.info(f"容器模型启动成功: {model_name}")
+                    return True
+                else:
+                    self.logger.error(f"容器模型健康检查失败: {model_name}")
+                    return False
+            else:
+                self.logger.error(f"容器API端点未设置: {model_name}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"容器模型启动失败: {model_name}, 错误: {e}")
+            return False
+    
+    def stop_container_model(self, model_name: str) -> bool:
+        """
+        停止容器模型
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            bool: 是否停止成功
+        """
+        try:
+            # 停止容器
+            success = self.container_runtime.stop_container(model_name)
+            
+            if success:
+                # 移除客户端
+                if model_name in self.container_clients:
+                    del self.container_clients[model_name]
+                
+                self.logger.info(f"容器模型停止成功: {model_name}")
+            else:
+                self.logger.error(f"容器模型停止失败: {model_name}")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"容器模型停止失败: {model_name}, 错误: {e}")
+            return False
+    
+    def remove_container_model(self, model_name: str) -> bool:
+        """
+        删除容器模型
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            bool: 是否删除成功
+        """
+        try:
+            # 删除容器
+            success = self.container_runtime.remove_container(model_name)
+            
+            if success:
+                # 移除客户端
+                if model_name in self.container_clients:
+                    del self.container_clients[model_name]
+                
+                self.logger.info(f"容器模型删除成功: {model_name}")
+            else:
+                self.logger.error(f"容器模型删除失败: {model_name}")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"容器模型删除失败: {model_name}, 错误: {e}")
+            return False
+    
+    def restart_container_model(self, model_name: str) -> bool:
+        """
+        重启容器模型
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            bool: 是否重启成功
+        """
+        try:
+            # 重启容器
+            success = self.container_runtime.restart_container(model_name)
+            
+            if success:
+                # 等待容器完全启动
+                time.sleep(5)
+                
+                # 更新客户端
+                if model_name in self.container_configs and model_name in self.container_clients:
+                    config = self.container_configs[model_name]
+                    container_info = self.container_runtime.get_container_info(model_name)
+                    
+                    if container_info and container_info.api_endpoint:
+                        if config.model_type == ModelType.DNABERT2:
+                            client = DNABERT2Client(container_info.api_endpoint)
+                        elif config.model_type == ModelType.LUCAONE:
+                            client = LucaOneClient(container_info.api_endpoint)
+                        else:
+                            client = ModelContainerClient(container_info.api_endpoint)
+                        
+                        self.container_clients[model_name] = client
+                
+                self.logger.info(f"容器模型重启成功: {model_name}")
+            else:
+                self.logger.error(f"容器模型重启失败: {model_name}")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"容器模型重启失败: {model_name}, 错误: {e}")
+            return False
+    
+    def get_container_model_info(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        获取容器模型信息
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            Optional[Dict[str, Any]]: 容器模型信息
+        """
+        try:
+            # 获取容器信息
+            container_info = self.container_runtime.get_container_info(model_name)
+            
+            if not container_info:
+                return None
+            
+            # 转换为字典
+            info = {
+                "name": container_info.name,
+                "status": container_info.status.value,
+                "image": container_info.image,
+                "ports": container_info.ports,
+                "created_at": container_info.created_at,
+                "started_at": container_info.started_at,
+                "health_status": container_info.health_status,
+                "api_endpoint": container_info.api_endpoint,
+                "metrics_endpoint": container_info.metrics_endpoint
+            }
+            
+            # 获取模型信息
+            if model_name in self.container_clients:
+                client = self.container_clients[model_name]
+                try:
+                    model_info = client.get_model_info()
+                    if model_info:
+                        info["model_info"] = model_info
+                except Exception as e:
+                    self.logger.error(f"获取容器模型信息失败: {model_name}, 错误: {e}")
+            
+            # 获取容器指标
+            metrics = self.container_runtime.get_container_metrics(model_name)
+            if metrics:
+                info["metrics"] = metrics
+            
+            return info
+            
+        except Exception as e:
+            self.logger.error(f"获取容器模型信息失败: {model_name}, 错误: {e}")
+            return None
+    
+    def list_container_models(self) -> List[Dict[str, Any]]:
+        """
+        列出所有容器模型
+        
+        Returns:
+            List[Dict[str, Any]]: 容器模型列表
+        """
+        try:
+            containers = self.container_runtime.list_containers(all_containers=True)
+            
+            result = []
+            for container in containers:
+                # 转换为字典
+                info = {
+                    "name": container.name,
+                    "status": container.status.value,
+                    "image": container.image,
+                    "ports": container.ports,
+                    "created_at": container.created_at,
+                    "started_at": container.started_at,
+                    "health_status": container.health_status,
+                    "api_endpoint": container.api_endpoint,
+                    "metrics_endpoint": container.metrics_endpoint
+                }
+                
+                # 添加模型配置信息
+                if container.name in self.container_configs:
+                    config = self.container_configs[container.name]
+                    info["model_type"] = config.model_type.value
+                    info["registered"] = True
+                else:
+                    info["model_type"] = None
+                    info["registered"] = False
+                
+                result.append(info)
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"列出容器模型失败: {e}")
+            return []
     
     def get_model_info(self, model_name: str) -> Dict[str, Any]:
         """
@@ -285,6 +755,10 @@ class ModelManager:
         Returns:
             Dict[str, Any]: 模型信息
         """
+        # 检查是否是容器模型
+        if model_name in self.container_clients:
+            return self.get_container_model_info(model_name) or {"error": "获取容器模型信息失败"}
+        
         if model_name not in self.models:
             return {"error": "模型不存在"}
             
@@ -296,8 +770,222 @@ class ModelManager:
             "memory_requirement": model.memory_requirement,
             "status": model.status.value,
             "device": model.device,
-            "is_loaded": model.is_loaded()
+            "is_loaded": model.is_loaded(),
+            "model_type": "local"
         }
+    
+    @monitor_performance(model_name="model_manager")
+    def predict_batch(
+        self,
+        model_name: Optional[str] = None,
+        sequences: List[str] = None,
+        task_type: Optional[str] = None,
+        sequence_type: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        批量预测
+        
+        Args:
+            model_name: 模型名称
+            sequences: 输入序列列表
+            task_type: 任务类型
+            sequence_type: 序列类型
+            **kwargs: 其他参数
+            
+        Returns:
+            Dict[str, Any]: 预测结果
+        """
+        if not sequences:
+            return {"error": "没有提供输入序列"}
+        
+        # 如果没有指定模型，尝试选择合适的模型
+        if not model_name:
+            model_name = self.get_best_model(TaskType(task_type) if task_type else None, 
+                                           SequenceType(sequence_type) if sequence_type else None)
+            if not model_name:
+                return {"error": "没有找到合适的模型"}
+        
+        # 检查是否是容器模型
+        if model_name in self.container_clients:
+            return self._predict_batch_with_container_model(model_name, sequences, task_type, sequence_type, **kwargs)
+        
+        # 加载本地模型
+        if not self.load_model(model_name):
+            return {"error": f"模型加载失败: {model_name}"}
+        
+        start_time = time.time()
+        results = []
+        
+        # 获取模型
+        model = self.loaded_models[model_name]
+        
+        # 批量处理
+        for sequence in sequences:
+            try:
+                # 执行预测
+                result = model.predict([sequence], TaskType(task_type) if task_type else None, **kwargs)
+                results.append(result)
+                
+            except Exception as e:
+                self.logger.error(f"批量预测失败: 模型={model_name}, 序列={sequence[:20]}..., 错误={str(e)}")
+                results.append({"error": str(e)})
+        
+        # 记录指标
+        processing_time = time.time() - start_time
+        metrics_collector.add_model_metric(model_name, "batch_prediction_count", 1)
+        metrics_collector.add_model_metric(model_name, "batch_prediction_time", processing_time)
+        metrics_collector.add_model_metric(model_name, "batch_size", len(sequences))
+        
+        return {
+            "results": results,
+            "model_name": model_name,
+            "model_type": "local",
+            "batch_size": len(sequences),
+            "processing_time": processing_time
+        }
+    
+    def _predict_batch_with_container_model(
+        self,
+        model_name: str,
+        sequences: List[str],
+        task_type: Optional[str] = None,
+        sequence_type: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        使用容器模型进行批量预测
+        
+        Args:
+            model_name: 模型名称
+            sequences: 输入序列列表
+            task_type: 任务类型
+            sequence_type: 序列类型
+            **kwargs: 其他参数
+            
+        Returns:
+            Dict[str, Any]: 预测结果
+        """
+        start_time = time.time()
+        
+        # 获取容器客户端
+        client = self.container_clients[model_name]
+        
+        try:
+            # 根据模型类型执行预测
+            if model_name in self.container_configs:
+                config = self.container_configs[model_name]
+                model_type = config.model_type
+            else:
+                # 尝试从容器信息中获取模型类型
+                container_info = self.container_runtime.get_container_info(model_name)
+                if container_info and "dnabert2" in container_info.image.lower():
+                    model_type = ModelType.DNABERT2
+                elif "lucaone" in container_info.image.lower():
+                    model_type = ModelType.LUCAONE
+                else:
+                    model_type = ModelType.DNABERT2  # 默认类型
+            
+            # 执行批量预测
+            if model_type == ModelType.DNABERT2:
+                if isinstance(client, DNABERT2Client):
+                    if task_type == "classification":
+                        result = client.classify_batch(sequences, kwargs)
+                    elif task_type == "extraction":
+                        result = client.extract_batch_features(sequences, kwargs)
+                    elif task_type == "annotation":
+                        result = client.annotate_batch_sequences(sequences, kwargs)
+                    else:
+                        # 默认分类
+                        result = client.classify_batch(sequences, kwargs)
+                else:
+                    # 通用批量预测
+                    from .container_client import BatchPredictionRequest
+                    request = BatchPredictionRequest(
+                        model_type=model_type,
+                        sequences=sequences,
+                        task_type=task_type,
+                        parameters=kwargs
+                    )
+                    result = client.predict_batch(request)
+            elif model_type == ModelType.LUCAONE:
+                if isinstance(client, LucaOneClient):
+                    if task_type == "prediction":
+                        result = client.predict_batch_sequences(sequences, kwargs)
+                    elif task_type == "classification":
+                        result = client.classify_batch_sequences(sequences, kwargs)
+                    elif task_type == "annotation":
+                        result = client.annotate_batch_sequences(sequences, kwargs)
+                    else:
+                        # 默认预测
+                        result = client.predict_batch_sequences(sequences, kwargs)
+                else:
+                    # 通用批量预测
+                    from .container_client import BatchPredictionRequest
+                    request = BatchPredictionRequest(
+                        model_type=model_type,
+                        sequences=sequences,
+                        task_type=task_type,
+                        parameters=kwargs
+                    )
+                    result = client.predict_batch(request)
+            else:
+                # 通用批量预测
+                from .container_client import BatchPredictionRequest
+                request = BatchPredictionRequest(
+                    model_type=model_type,
+                    sequences=sequences,
+                    task_type=task_type,
+                    parameters=kwargs
+                )
+                result = client.predict_batch(request)
+            
+            # 转换结果格式
+            if hasattr(result, 'success') and hasattr(result, 'data'):
+                if result.success:
+                    return {
+                        "success": True,
+                        "results": result.data,
+                        "model_name": model_name,
+                        "model_type": model_type.value,
+                        "batch_size": len(sequences),
+                        "processing_time": result.processing_time or (time.time() - start_time),
+                        "container_model": True
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": result.error,
+                        "model_name": model_name,
+                        "model_type": model_type.value,
+                        "batch_size": len(sequences),
+                        "processing_time": result.processing_time or (time.time() - start_time),
+                        "container_model": True
+                    }
+            else:
+                # 假设结果是字典格式
+                return {
+                    "success": True,
+                    "results": result,
+                    "model_name": model_name,
+                    "model_type": model_type.value,
+                    "batch_size": len(sequences),
+                    "processing_time": time.time() - start_time,
+                    "container_model": True
+                }
+                
+        except Exception as e:
+            self.logger.error(f"容器模型批量预测失败: 模型={model_name}, 错误={str(e)}")
+            metrics_collector.add_model_metric(model_name, "batch_prediction_error", 1)
+            return {
+                "success": False,
+                "error": str(e),
+                "model_name": model_name,
+                "model_type": model_type.value if 'model_type' in locals() else "unknown",
+                "batch_size": len(sequences),
+                "processing_time": time.time() - start_time,
+                "container_model": True
+            }
     
     def _log_resource_usage(self, model_name: str) -> None:
         """记录模型加载后的资源使用情况"""
@@ -361,6 +1049,414 @@ class ModelManager:
         # 在实际应用中，可以根据使用频率等信息来决定
         model_name = next(iter(self.loaded_models))
         self.unload_model(model_name)
+    
+    def _save_performance_metric(self, metric: PerformanceMetric) -> None:
+        """
+        保存性能指标到文件
+        
+        Args:
+            metric: 性能指标
+        """
+        try:
+            # 每天保存一次指标数据到CSV文件
+            today = datetime.now().strftime("%Y%m%d")
+            csv_path = f"performance_data/metrics_{today}.csv"
+            
+            # 检查文件是否存在，如果不存在则创建并写入头部
+            file_exists = os.path.exists(csv_path)
+            
+            with open(csv_path, 'a', newline='') as csvfile:
+                fieldnames = [
+                    'timestamp', 'model_name', 'deployment_type', 'metric_type',
+                    'value', 'unit', 'metadata'
+                ]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                
+                if not file_exists:
+                    writer.writeheader()
+                
+                writer.writerow({
+                    'timestamp': metric.timestamp.isoformat(),
+                    'model_name': metric.model_name,
+                    'deployment_type': metric.deployment_type,
+                    'metric_type': metric.metric_type,
+                    'value': metric.value,
+                    'unit': metric.unit,
+                    'metadata': json.dumps(metric.metadata) if metric.metadata else ''
+                })
+        except Exception as e:
+            self.logger.error(f"保存性能指标失败: {str(e)}")
+    
+    def collect_inference_time(
+        self,
+        model_name: str,
+        deployment_type: str,
+        inference_time_ms: float,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        收集推理时间指标
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            inference_time_ms: 推理时间（毫秒）
+            metadata: 元数据
+        """
+        self.performance_collector.add_inference_time(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            inference_time_ms=inference_time_ms,
+            metadata=metadata
+        )
+    
+    def collect_throughput(
+        self,
+        model_name: str,
+        deployment_type: str,
+        requests_per_sec: float,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        收集吞吐量指标
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            requests_per_sec: 每秒请求数
+            metadata: 元数据
+        """
+        self.performance_collector.add_throughput(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            requests_per_sec=requests_per_sec,
+            metadata=metadata
+        )
+    
+    def collect_memory_usage(
+        self,
+        model_name: str,
+        deployment_type: str,
+        memory_mb: float,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        收集内存使用指标
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            memory_mb: 内存使用量（MB）
+            metadata: 元数据
+        """
+        self.performance_collector.add_memory_usage(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            memory_mb=memory_mb,
+            metadata=metadata
+        )
+    
+    def collect_cpu_usage(
+        self,
+        model_name: str,
+        deployment_type: str,
+        cpu_percent: float,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        收集CPU使用指标
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            cpu_percent: CPU使用率（百分比）
+            metadata: 元数据
+        """
+        self.performance_collector.add_cpu_usage(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            cpu_percent=cpu_percent,
+            metadata=metadata
+        )
+    
+    def get_performance_metrics(
+        self,
+        model_name: Optional[str] = None,
+        deployment_type: Optional[str] = None,
+        metric_type: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取性能指标
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            metric_type: 指标类型
+            start_time: 开始时间
+            end_time: 结束时间
+            
+        Returns:
+            List[Dict[str, Any]]: 性能指标列表
+        """
+        metrics = self.performance_collector.get_metrics(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            metric_type=metric_type,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        return [m.to_dict() for m in metrics]
+    
+    def generate_performance_report(
+        self,
+        model_name: str,
+        deployment_type: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        生成性能报告
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            start_time: 开始时间
+            end_time: 结束时间
+            
+        Returns:
+            Dict[str, Any]: 性能报告
+        """
+        report = self.performance_collector.generate_report(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        return report.to_dict()
+    
+    def compare_model_performance(
+        self,
+        model_names: List[str],
+        metric_type: str,
+        deployment_type: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        比较模型性能
+        
+        Args:
+            model_names: 模型名称列表
+            metric_type: 指标类型
+            deployment_type: 部署类型
+            start_time: 开始时间
+            end_time: 结束时间
+            
+        Returns:
+            Dict[str, Any]: 比较结果
+        """
+        return self.performance_collector.compare_models(
+            model_names=model_names,
+            metric_type=metric_type,
+            deployment_type=deployment_type,
+            start_time=start_time,
+            end_time=end_time
+        )
+    
+    def save_performance_metrics(self, file_path: Optional[str] = None) -> str:
+        """
+        保存性能指标到文件
+        
+        Args:
+            file_path: 文件路径，如果为None则使用默认路径
+            
+        Returns:
+            str: 保存的文件路径
+        """
+        return self.performance_collector.save_metrics_to_csv(file_path)
+    
+    def save_performance_report(
+        self,
+        model_name: str,
+        deployment_type: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        file_path: Optional[str] = None
+    ) -> str:
+        """
+        保存性能报告到文件
+        
+        Args:
+            model_name: 模型名称
+            deployment_type: 部署类型
+            start_time: 开始时间
+            end_time: 结束时间
+            file_path: 文件路径，如果为None则使用默认路径
+            
+        Returns:
+            str: 保存的文件路径
+        """
+        report = self.performance_collector.generate_report(
+            model_name=model_name,
+            deployment_type=deployment_type,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        return self.performance_collector.save_report_to_json(report, file_path)
+    
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """
+        获取性能收集器摘要
+        
+        Returns:
+            Dict[str, Any]: 摘要信息
+        """
+        return self.performance_collector.get_summary()
+    
+    def _handle_container_alert(self, alert) -> None:
+        """
+        处理容器告警
+        
+        Args:
+            alert: 容器告警对象
+        """
+        if alert.resolved:
+            self.logger.info(f"容器告警已解决: {alert.name} - {alert.message}")
+        else:
+            self.logger.warning(f"容器告警: {alert.name} - {alert.message}")
+            
+            # 根据告警类型采取行动
+            if alert.alert_type == "container_down" and alert.severity == "critical":
+                # 尝试重启容器
+                try:
+                    self.logger.info(f"尝试重启容器: {alert.name}")
+                    self.restart_container_model(alert.name)
+                except Exception as e:
+                    self.logger.error(f"重启容器失败: {alert.name}, 错误: {str(e)}")
+    
+    def start_container_monitoring(self, container_names: Optional[List[str]] = None) -> None:
+        """
+        启动容器监控
+        
+        Args:
+            container_names: 要监控的容器名称列表，如果为None则监控所有容器
+        """
+        self.container_monitor.start_monitoring(container_names)
+        self.logger.info("容器监控已启动")
+    
+    def stop_container_monitoring(self) -> None:
+        """停止容器监控"""
+        self.container_monitor.stop_monitoring()
+        self.logger.info("容器监控已停止")
+    
+    def get_container_metrics(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        获取容器当前指标
+        
+        Args:
+            name: 容器名称
+            
+        Returns:
+            Optional[Dict[str, Any]]: 容器指标，如果不存在则返回None
+        """
+        metrics = self.container_monitor.get_container_metrics(name)
+        if metrics:
+            return metrics.to_dict()
+        return None
+    
+    def get_container_metrics_history(
+        self,
+        name: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取容器指标历史记录
+        
+        Args:
+            name: 容器名称
+            start_time: 开始时间
+            end_time: 结束时间
+            
+        Returns:
+            List[Dict[str, Any]]: 指标历史记录
+        """
+        history = self.container_monitor.get_container_metrics_history(name, start_time, end_time)
+        return [m.to_dict() for m in history]
+    
+    def get_container_alerts(self, name: Optional[str] = None, active_only: bool = True) -> List[Dict[str, Any]]:
+        """
+        获取容器告警
+        
+        Args:
+            name: 容器名称，如果为None则返回所有容器的告警
+            active_only: 是否只返回活动告警
+            
+        Returns:
+            List[Dict[str, Any]]: 告警列表
+        """
+        if active_only:
+            alerts = self.container_monitor.get_active_alerts(name)
+        else:
+            alerts = self.container_monitor.get_alert_history(name)
+        
+        return [a.to_dict() for a in alerts]
+    
+    def set_container_monitoring_thresholds(
+        self,
+        cpu_threshold: Optional[float] = None,
+        memory_threshold: Optional[float] = None,
+        disk_threshold: Optional[float] = None
+    ) -> None:
+        """
+        设置容器监控告警阈值
+        
+        Args:
+            cpu_threshold: CPU使用率阈值（百分比）
+            memory_threshold: 内存使用率阈值（百分比）
+            disk_threshold: 磁盘使用率阈值（百分比）
+        """
+        self.container_monitor.set_thresholds(cpu_threshold, memory_threshold, disk_threshold)
+        self.logger.info(f"容器监控告警阈值已更新")
+    
+    def get_container_monitoring_summary(self) -> Dict[str, Any]:
+        """
+        获取容器监控摘要
+        
+        Returns:
+            Dict[str, Any]: 监控摘要
+        """
+        return self.container_monitor.get_summary()
+    
+    def shutdown(self) -> None:
+        """关闭模型管理器，清理资源"""
+        self.logger.info("正在关闭模型管理器...")
+        
+        # 停止容器监控
+        self.stop_container_monitoring()
+        
+        # 停止所有容器模型
+        for name in list(self.container_clients.keys()):
+            try:
+                self.stop_container_model(name)
+                self.logger.info(f"已停止容器模型: {name}")
+            except Exception as e:
+                self.logger.error(f"停止容器模型失败: {name}, 错误: {str(e)}")
+        
+        # 卸载所有本地模型
+        for name in list(self.loaded_models.keys()):
+            try:
+                self.unload_model(name)
+                self.logger.info(f"已卸载模型: {name}")
+            except Exception as e:
+                self.logger.error(f"卸载模型失败: {name}, 错误: {str(e)}")
+        
+        self.logger.info("模型管理器已关闭")
 
 
 class GPUScheduler:
