@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..model_manager import ModelManager
 from ..task_types import TaskType, SequenceType, DeviceType, ModelStatus
+from ..monitoring import get_logger, monitor_performance, monitor_context, metrics_collector, log_io_shapes
 
 
 class DNABERT2Model:
@@ -32,8 +33,9 @@ class DNABERT2Model:
         self.model = None
         self.tokenizer = None
         self.model_status = ModelStatus.NOT_LOADED
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_logger(__name__)
         
+    @monitor_performance(model_name="dnabert2")
     def load_model(self, model_name: str = "dnabert_2") -> bool:
         """
         加载DNABERT_2模型
@@ -44,33 +46,42 @@ class DNABERT2Model:
         Returns:
             bool: 是否加载成功
         """
-        try:
-            # 这里应该实现实际的模型加载逻辑
-            # 由于DNABERT_2需要特定的环境，这里只是模拟
-            
-            # 设置设备
-            if self.device == DeviceType.CPU:
-                device_str = "cpu"
-            else:
-                device_str = f"cuda:{self.device.value}"
-            
-            # 模拟模型加载
-            self.logger.info(f"Loading DNABERT_2 model from {self.model_path}")
-            self.logger.info(f"Model name: {model_name}")
-            self.logger.info(f"Using device: {device_str}")
-            
-            # 在实际实现中，这里会加载真实的模型和tokenizer
-            # self.model = load_dnabert2_model(...)
-            # self.tokenizer = load_dnabert2_tokenizer(...)
-            
-            self.model_status = ModelStatus.LOADED
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load DNABERT_2 model: {str(e)}")
-            self.model_status = ModelStatus.ERROR
-            return False
+        with monitor_context("load_model", model_name=model_name):
+            try:
+                # 这里应该实现实际的模型加载逻辑
+                # 由于DNABERT_2需要特定的环境，这里只是模拟
+                
+                # 设置设备
+                if self.device == DeviceType.CPU:
+                    device_str = "cpu"
+                else:
+                    device_str = f"cuda:{self.device.value}"
+                
+                # 模拟模型加载
+                self.logger.info("正在加载DNABERT_2模型", 
+                               model_path=self.model_path,
+                               model_name=model_name,
+                               device=device_str)
+                
+                # 在实际实现中，这里会加载真实的模型和tokenizer
+                # self.model = load_dnabert2_model(...)
+                # self.tokenizer = load_dnabert2_tokenizer(...)
+                
+                self.model_status = ModelStatus.LOADED
+                metrics_collector.record_metric("model_load_success", 1, {"model": model_name})
+                self.logger.info("DNABERT_2模型加载成功", model_name=model_name)
+                return True
+                
+            except Exception as e:
+                self.logger.error("DNABERT_2模型加载失败", 
+                                model_name=model_name,
+                                error=str(e),
+                                exc_info=True)
+                metrics_collector.record_metric("model_load_failure", 1, {"model": model_name})
+                self.model_status = ModelStatus.ERROR
+                return False
     
+    @monitor_performance(model_name="dnabert2")
     def unload_model(self) -> bool:
         """
         卸载模型
@@ -78,23 +89,28 @@ class DNABERT2Model:
         Returns:
             bool: 是否卸载成功
         """
-        try:
-            if self.model is not None:
-                # 在实际实现中，这里会释放模型资源
-                del self.model
-                self.model = None
-            
-            if self.tokenizer is not None:
-                del self.tokenizer
-                self.tokenizer = None
+        with monitor_context("unload_model", model_name="dnabert2"):
+            try:
+                if self.model is not None:
+                    # 在实际实现中，这里会释放模型资源
+                    del self.model
+                    self.model = None
                 
-            self.model_status = ModelStatus.NOT_LOADED
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to unload DNABERT_2 model: {str(e)}")
-            return False
+                if self.tokenizer is not None:
+                    del self.tokenizer
+                    self.tokenizer = None
+                    
+                self.model_status = ModelStatus.NOT_LOADED
+                metrics_collector.record_metric("model_unload_success", 1, {"model": "dnabert2"})
+                self.logger.info("DNABERT_2模型卸载成功")
+                return True
+                
+            except Exception as e:
+                self.logger.error("DNABERT_2模型卸载失败", error=str(e), exc_info=True)
+                metrics_collector.record_metric("model_unload_failure", 1, {"model": "dnabert2"})
+                return False
     
+    @monitor_performance(model_name="dnabert2", task_type="promoter_prediction")
     def predict_promoter_activity(
         self, 
         dna_sequences: List[str],
@@ -115,43 +131,78 @@ class DNABERT2Model:
         if self.model_status != ModelStatus.LOADED:
             raise RuntimeError("Model is not loaded")
         
-        try:
-            # 在实际实现中，这里会调用真实的模型进行推理
-            # 这里只是模拟返回
-            results = []
-            
-            for dna_seq in dna_sequences:
-                # 模拟启动子活性预测
-                promoter_activity = np.random.rand().astype(np.float32)  # 0-1之间的值
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+        # 记录输入信息
+        log_io_shapes(
+            input_data={"sequences": dna_sequences, "truncation_seq_length": truncation_seq_length, "batch_size": batch_size},
+            output_data=None,
+            task_type="promoter_prediction"
+        )
+        
+        with monitor_context("predict_promoter_activity", 
+                           sequences_count=len(dna_sequences),
+                           truncation_seq_length=truncation_seq_length,
+                           batch_size=batch_size):
+            try:
+                # 在实际实现中，这里会调用真实的模型进行推理
+                # 这里只是模拟返回
+                results = []
                 
-                # 计算GC含量
-                gc_count = dna_seq.count('G') + dna_seq.count('C')
-                gc_content = gc_count / len(dna_seq) * 100 if len(dna_seq) > 0 else 0
+                for dna_seq in dna_sequences:
+                    # 模拟启动子活性预测
+                    promoter_activity = np.random.rand().astype(np.float32)  # 0-1之间的值
+                    confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                    
+                    # 计算GC含量
+                    gc_count = dna_seq.count('G') + dna_seq.count('C')
+                    gc_content = gc_count / len(dna_seq) * 100 if len(dna_seq) > 0 else 0
+                    
+                    # 检测常见的启动子基序
+                    tata_box = "TATAAA" in dna_seq
+                    caat_box = "CCAAT" in dna_seq
+                    gc_box = "GGGCGG" in dna_seq
+                    
+                    result = {
+                        "dna_sequence": dna_seq[:50] + "..." if len(dna_seq) > 50 else dna_seq,
+                        "promoter_activity": float(promoter_activity),
+                        "confidence": float(confidence),
+                        "gc_content": float(gc_content),
+                        "tata_box": tata_box,
+                        "caat_box": caat_box,
+                        "gc_box": gc_box,
+                        "prediction": "strong" if promoter_activity > 0.7 else "moderate" if promoter_activity > 0.3 else "weak"
+                    }
+                    
+                    results.append(result)
                 
-                # 检测常见的启动子基序
-                tata_box = "TATAAA" in dna_seq
-                caat_box = "CCAAT" in dna_seq
-                gc_box = "GGGCGG" in dna_seq
+                # 记录输出信息
+                log_io_shapes(
+                    input_data={"sequences": dna_sequences, "truncation_seq_length": truncation_seq_length, "batch_size": batch_size},
+                    output_data={"results_count": len(results)},
+                    task_type="promoter_prediction"
+                )
                 
-                result = {
-                    "dna_sequence": dna_seq[:50] + "..." if len(dna_seq) > 50 else dna_seq,
-                    "promoter_activity": float(promoter_activity),
-                    "confidence": float(confidence),
-                    "gc_content": float(gc_content),
-                    "tata_box": tata_box,
-                    "caat_box": caat_box,
-                    "gc_box": gc_box,
-                    "prediction": "strong" if promoter_activity > 0.7 else "moderate" if promoter_activity > 0.3 else "weak"
-                }
+                # 记录成功指标
+                metrics_collector.record_metric("promoter_prediction_success", 1, 
+                                              {"sequences_count": len(dna_sequences), 
+                                               "batch_size": batch_size})
                 
-                results.append(result)
-            
-            return results
-            
-        except Exception as e:
-            self.logger.error(f"Failed to predict promoter activity: {str(e)}")
-            raise
+                self.logger.info("启动子活性预测完成", 
+                               sequences_count=len(dna_sequences),
+                               results_count=len(results))
+                
+                return results
+                
+            except Exception as e:
+                self.logger.error("启动子活性预测失败", 
+                                error=str(e),
+                                sequences_count=len(dna_sequences),
+                                exc_info=True)
+                
+                # 记录失败指标
+                metrics_collector.record_metric("promoter_prediction_failure", 1, 
+                                              {"sequences_count": len(dna_sequences), 
+                                               "batch_size": batch_size})
+                raise
     
     def predict_enhancer_activity(
         self, 

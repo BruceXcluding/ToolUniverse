@@ -10,6 +10,7 @@ import torch
 import psutil
 from .models.base_model import BaseModel
 from .task_types import TaskType, SequenceType, ModelStatus, DeviceType
+from .monitoring import get_logger, monitor_performance, monitor_context, metrics_collector
 
 
 class ModelManager:
@@ -22,7 +23,7 @@ class ModelManager:
         Args:
             config_path: 配置文件路径
         """
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_logger(__name__)
         self.models: Dict[str, BaseModel] = {}
         self.loaded_models: Dict[str, BaseModel] = {}
         self.config = {}
@@ -74,6 +75,7 @@ class ModelManager:
         else:
             return obj
     
+    @monitor_performance(model_name="model_manager")
     def register_model(self, model: BaseModel):
         """
         注册模型
@@ -82,8 +84,9 @@ class ModelManager:
             model: 模型实例
         """
         self.models[model.model_name] = model
-        self.logger.info(f"已注册模型: {model.model_name}")
+        self.logger.info("模型已注册", model_name=model.model_name)
     
+    @monitor_performance(model_name="model_manager")
     def load_model(self, model_name: str, device: Union[str, DeviceType] = DeviceType.AUTO) -> bool:
         """
         加载模型
@@ -96,32 +99,42 @@ class ModelManager:
             bool: 是否加载成功
         """
         if model_name not in self.models:
-            self.logger.error(f"模型不存在: {model_name}")
+            self.logger.error("模型不存在", model_name=model_name)
             return False
             
         model = self.models[model_name]
         
         # 检查模型是否已加载
         if model.is_loaded():
-            self.logger.info(f"模型已加载: {model_name}")
+            self.logger.info("模型已加载", model_name=model_name)
             return True
             
         # 检查内存是否足够
         if not self._check_memory(model):
-            self.logger.warning(f"内存不足，尝试卸载其他模型: {model_name}")
+            self.logger.warning("内存不足，尝试卸载其他模型", model_name=model_name)
             self._unload_least_used_model()
             
         # 加载模型
         try:
-            success = model.load_model(device)
-            if success:
-                self.loaded_models[model_name] = model
-                self.logger.info(f"模型加载成功: {model_name}")
-            return success
+            with monitor_context(model_name=model_name):
+                success = model.load_model(device)
+                if success:
+                    self.loaded_models[model_name] = model
+                    self.logger.info("模型加载成功", model_name=model_name)
+                    
+                    # 记录模型加载指标
+                    metrics_collector.add_model_metric(model_name, "load", 1)
+                    
+                    # 记录加载后的资源使用情况
+                    self._log_resource_usage(model_name)
+                return success
         except Exception as e:
-            self.logger.error(f"模型加载失败: {model_name}, 错误: {e}")
+            self.logger.error("模型加载失败", model_name=model_name, error=str(e))
+            # 记录模型加载失败指标
+            metrics_collector.add_model_metric(model_name, "load_failure", 1)
             return False
     
+    @monitor_performance(model_name="model_manager")
     def unload_model(self, model_name: str) -> bool:
         """
         卸载模型
@@ -133,18 +146,24 @@ class ModelManager:
             bool: 是否卸载成功
         """
         if model_name not in self.loaded_models:
-            self.logger.warning(f"模型未加载: {model_name}")
+            self.logger.warning("模型未加载", model_name=model_name)
             return False
             
         model = self.loaded_models[model_name]
         try:
-            success = model.unload_model()
-            if success:
-                del self.loaded_models[model_name]
-                self.logger.info(f"模型卸载成功: {model_name}")
-            return success
+            with monitor_context(model_name=model_name):
+                success = model.unload_model()
+                if success:
+                    del self.loaded_models[model_name]
+                    self.logger.info("模型卸载成功", model_name=model_name)
+                    
+                    # 记录模型卸载指标
+                    metrics_collector.add_model_metric(model_name, "unload", 1)
+                return success
         except Exception as e:
-            self.logger.error(f"模型卸载失败: {model_name}, 错误: {e}")
+            self.logger.error("模型卸载失败", model_name=model_name, error=str(e))
+            # 记录模型卸载失败指标
+            metrics_collector.add_model_metric(model_name, "unload_failure", 1)
             return False
     
     def get_best_model(self, task_type: TaskType, sequence_type: Optional[SequenceType] = None) -> Optional[str]:
@@ -181,6 +200,7 @@ class ModelManager:
         # 返回默认模型
         return default_model
     
+    @monitor_performance(model_name="model_manager", task_type="prediction")
     def predict(
         self, 
         sequences: List[str], 
@@ -216,10 +236,35 @@ class ModelManager:
         # 执行预测
         model = self.loaded_models[model_name]
         try:
-            result = model.predict(sequences, task_type, **kwargs)
-            return result
+            with monitor_context(model_name=model_name, task_type=task_type.value):
+                # 记录输入信息
+                self.logger.info(
+                    "开始预测", 
+                    model_name=model_name,
+                    task_type=task_type.value,
+                    sequence_count=len(sequences),
+                    sequence_type=sequence_type.value if sequence_type else None
+                )
+                
+                # 执行预测
+                result = model.predict(sequences, task_type, **kwargs)
+                
+                # 记录预测成功指标
+                metrics_collector.add_model_metric(model_name, "prediction_success", 1)
+                
+                # 记录输出信息
+                if "predictions" in result:
+                    self.logger.info(
+                        "预测完成", 
+                        model_name=model_name,
+                        output_count=len(result["predictions"]) if isinstance(result["predictions"], list) else 1
+                    )
+                
+                return result
         except Exception as e:
-            self.logger.error(f"预测失败: {e}")
+            self.logger.error("预测失败", model_name=model_name, error=str(e))
+            # 记录预测失败指标
+            metrics_collector.add_model_metric(model_name, "prediction_failure", 1)
             return {"error": f"预测失败: {str(e)}"}
     
     def list_models(self) -> List[str]:
@@ -254,6 +299,48 @@ class ModelManager:
             "is_loaded": model.is_loaded()
         }
     
+    def _log_resource_usage(self, model_name: str) -> None:
+        """记录模型加载后的资源使用情况"""
+        # 获取系统资源信息
+        cpu_memory = psutil.virtual_memory()
+        cpu_usage = psutil.cpu_percent(interval=1)
+        
+        self.logger.info(
+            "系统资源使用情况",
+            model_name=model_name,
+            cpu_percent=cpu_usage,
+            memory_total=cpu_memory.total,
+            memory_used=cpu_memory.used,
+            memory_percent=cpu_memory.percent
+        )
+        
+        # GPU资源信息
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                device = f"cuda:{i}"
+                memory_info = self.gpu_scheduler.get_device_memory_info(device)
+                if "error" not in memory_info:
+                    self.logger.info(
+                        "GPU资源使用情况",
+                        model_name=model_name,
+                        gpu_id=i,
+                        gpu_memory_total=memory_info["total"],
+                        gpu_memory_allocated=memory_info["allocated"],
+                        gpu_memory_available=memory_info["available"]
+                    )
+        
+        # PyTorch GPU内存
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024 ** 3)  # GB
+            reserved = torch.cuda.memory_reserved() / (1024 ** 3)   # GB
+            
+            self.logger.info(
+                "PyTorch GPU内存使用情况",
+                model_name=model_name,
+                memory_allocated_gb=allocated,
+                memory_reserved_gb=reserved
+            )
+    
     def _check_memory(self, model: BaseModel) -> bool:
         """检查是否有足够的内存加载模型"""
         # 获取可用内存
@@ -280,9 +367,10 @@ class GPUScheduler:
     """GPU调度器"""
     
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_logger(__name__)
         self.device_usage = {}  # 记录每个GPU设备的使用情况
         
+    @monitor_performance(model_name="gpu_scheduler")
     def get_available_device(self) -> Optional[str]:
         """
         获取可用的GPU设备
@@ -291,10 +379,12 @@ class GPUScheduler:
             Optional[str]: 可用的GPU设备，如"cuda:0"，如果没有可用GPU则返回None
         """
         if not torch.cuda.is_available():
+            self.logger.info("没有可用的CUDA设备")
             return None
             
         # 获取GPU数量
         gpu_count = torch.cuda.device_count()
+        self.logger.info("检测到GPU设备", gpu_count=gpu_count)
         
         # 检查每个GPU的内存使用情况
         best_device = None
@@ -306,12 +396,26 @@ class GPUScheduler:
             allocated_memory = torch.cuda.memory_allocated(i)
             available_memory = total_memory - allocated_memory
             
+            self.logger.info(
+                "GPU设备内存情况",
+                gpu_id=i,
+                total_memory_gb=total_memory / (1024**3),
+                allocated_memory_gb=allocated_memory / (1024**3),
+                available_memory_gb=available_memory / (1024**3)
+            )
+            
             if available_memory > max_available_memory:
                 max_available_memory = available_memory
                 best_device = device
                 
+        if best_device:
+            self.logger.info("选择最佳GPU设备", device=best_device, available_memory_gb=max_available_memory / (1024**3))
+        else:
+            self.logger.warning("没有找到可用的GPU设备")
+            
         return best_device
     
+    @monitor_performance(model_name="gpu_scheduler")
     def get_device_memory_info(self, device: str) -> Dict[str, int]:
         """
         获取设备内存信息
@@ -331,11 +435,21 @@ class GPUScheduler:
             allocated_memory = torch.cuda.memory_allocated(device_id)
             available_memory = total_memory - allocated_memory
             
-            return {
+            result = {
                 "total": total_memory // (1024 * 1024),  # MB
                 "allocated": allocated_memory // (1024 * 1024),  # MB
                 "available": available_memory // (1024 * 1024)  # MB
             }
+            
+            self.logger.info(
+                "设备内存信息",
+                device=device,
+                total_memory_mb=result["total"],
+                allocated_memory_mb=result["allocated"],
+                available_memory_mb=result["available"]
+            )
+            
+            return result
         except Exception as e:
-            self.logger.error(f"获取设备内存信息失败: {e}")
+            self.logger.error("获取设备内存信息失败", device=device, error=str(e))
             return {"error": str(e)}

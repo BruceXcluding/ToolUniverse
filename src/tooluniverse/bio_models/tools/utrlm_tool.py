@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..model_manager import ModelManager
 from ..task_types import TaskType, SequenceType, DeviceType, ModelStatus
+from ..monitoring import get_logger, monitor_performance, monitor_context, metrics_collector, log_io_shapes
 
 
 class UTRLMModel:
@@ -32,8 +33,9 @@ class UTRLMModel:
         self.model = None
         self.tokenizer = None
         self.model_status = ModelStatus.NOT_LOADED
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_logger(__name__)
         
+    @monitor_performance(model_name="utrlm")
     def load_model(self, model_name: str = "utr-lm") -> bool:
         """
         加载UTR-LM模型
@@ -44,33 +46,42 @@ class UTRLMModel:
         Returns:
             bool: 是否加载成功
         """
-        try:
-            # 这里应该实现实际的模型加载逻辑
-            # 由于UTR-LM需要特定的环境，这里只是模拟
-            
-            # 设置设备
-            if self.device == DeviceType.CPU:
-                device_str = "cpu"
-            else:
-                device_str = f"cuda:{self.device.value}"
-            
-            # 模拟模型加载
-            self.logger.info(f"Loading UTR-LM model from {self.model_path}")
-            self.logger.info(f"Model name: {model_name}")
-            self.logger.info(f"Using device: {device_str}")
-            
-            # 在实际实现中，这里会加载真实的模型和tokenizer
-            # self.model = load_utrlm_model(...)
-            # self.tokenizer = load_utrlm_tokenizer(...)
-            
-            self.model_status = ModelStatus.LOADED
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load UTR-LM model: {str(e)}")
-            self.model_status = ModelStatus.ERROR
-            return False
+        with monitor_context("load_model", model_name=model_name):
+            try:
+                # 这里应该实现实际的模型加载逻辑
+                # 由于UTR-LM需要特定的环境，这里只是模拟
+                
+                # 设置设备
+                if self.device == DeviceType.CPU:
+                    device_str = "cpu"
+                else:
+                    device_str = f"cuda:{self.device.value}"
+                
+                # 模拟模型加载
+                self.logger.info("正在加载UTR-LM模型", 
+                               model_path=self.model_path,
+                               model_name=model_name,
+                               device=device_str)
+                
+                # 在实际实现中，这里会加载真实的模型和tokenizer
+                # self.model = load_utrlm_model(...)
+                # self.tokenizer = load_utrlm_tokenizer(...)
+                
+                self.model_status = ModelStatus.LOADED
+                metrics_collector.record_metric("model_load_success", 1, {"model": model_name})
+                self.logger.info("UTR-LM模型加载成功", model_name=model_name)
+                return True
+                
+            except Exception as e:
+                self.logger.error("UTR-LM模型加载失败", 
+                                model_name=model_name,
+                                error=str(e),
+                                exc_info=True)
+                metrics_collector.record_metric("model_load_failure", 1, {"model": model_name})
+                self.model_status = ModelStatus.ERROR
+                return False
     
+    @monitor_performance(model_name="utrlm")
     def unload_model(self) -> bool:
         """
         卸载模型
@@ -78,23 +89,28 @@ class UTRLMModel:
         Returns:
             bool: 是否卸载成功
         """
-        try:
-            if self.model is not None:
-                # 在实际实现中，这里会释放模型资源
-                del self.model
-                self.model = None
-            
-            if self.tokenizer is not None:
-                del self.tokenizer
-                self.tokenizer = None
+        with monitor_context("unload_model", model_name="utrlm"):
+            try:
+                if self.model is not None:
+                    # 在实际实现中，这里会释放模型资源
+                    del self.model
+                    self.model = None
                 
-            self.model_status = ModelStatus.NOT_LOADED
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to unload UTR-LM model: {str(e)}")
-            return False
+                if self.tokenizer is not None:
+                    del self.tokenizer
+                    self.tokenizer = None
+                    
+                self.model_status = ModelStatus.NOT_LOADED
+                metrics_collector.record_metric("model_unload_success", 1, {"model": "utrlm"})
+                self.logger.info("UTR-LM模型卸载成功")
+                return True
+                
+            except Exception as e:
+                self.logger.error("UTR-LM模型卸载失败", error=str(e), exc_info=True)
+                metrics_collector.record_metric("model_unload_failure", 1, {"model": "utrlm"})
+                return False
     
+    @monitor_performance(model_name="utrlm", task_type="translation_efficiency")
     def predict_translation_efficiency(
         self, 
         utr_sequences: List[str],
@@ -115,41 +131,76 @@ class UTRLMModel:
         if self.model_status != ModelStatus.LOADED:
             raise RuntimeError("Model is not loaded")
         
-        try:
-            # 在实际实现中，这里会调用真实的模型进行推理
-            # 这里只是模拟返回
-            results = []
-            
-            for utr_seq in utr_sequences:
-                # 模拟翻译效率预测
-                translation_efficiency = np.random.rand().astype(np.float32) * 10  # 0-10之间的值
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+        # 记录输入信息
+        log_io_shapes(
+            input_data={"sequences": utr_sequences, "truncation_seq_length": truncation_seq_length, "batch_size": batch_size},
+            output_data=None,
+            task_type="translation_efficiency"
+        )
+        
+        with monitor_context("predict_translation_efficiency", 
+                           sequences_count=len(utr_sequences),
+                           truncation_seq_length=truncation_seq_length,
+                           batch_size=batch_size):
+            try:
+                # 在实际实现中，这里会调用真实的模型进行推理
+                # 这里只是模拟返回
+                results = []
                 
-                # 计算GC含量
-                gc_count = utr_seq.count('G') + utr_seq.count('C')
-                gc_content = gc_count / len(utr_seq) * 100 if len(utr_seq) > 0 else 0
+                for utr_seq in utr_sequences:
+                    # 模拟翻译效率预测
+                    translation_efficiency = np.random.rand().astype(np.float32) * 10  # 0-10之间的值
+                    confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                    
+                    # 计算GC含量
+                    gc_count = utr_seq.count('G') + utr_seq.count('C')
+                    gc_content = gc_count / len(utr_seq) * 100 if len(utr_seq) > 0 else 0
+                    
+                    # 检测常见的UTR基序
+                    kozak_sequence = "GCCACCATGG" in utr_seq
+                    shine_dalgarno = "AGGAGG" in utr_seq
+                    
+                    result = {
+                        "utr_sequence": utr_seq[:50] + "..." if len(utr_seq) > 50 else utr_seq,
+                        "translation_efficiency": float(translation_efficiency),
+                        "confidence": float(confidence),
+                        "gc_content": float(gc_content),
+                        "kozak_sequence": kozak_sequence,
+                        "shine_dalgarno": shine_dalgarno,
+                        "prediction": "high" if translation_efficiency > 7 else "medium" if translation_efficiency > 3 else "low"
+                    }
+                    
+                    results.append(result)
                 
-                # 检测常见的UTR基序
-                kozak_sequence = "GCCACCATGG" in utr_seq
-                shine_dalgarno = "AGGAGG" in utr_seq
+                # 记录输出信息
+                log_io_shapes(
+                    input_data={"sequences": utr_sequences, "truncation_seq_length": truncation_seq_length, "batch_size": batch_size},
+                    output_data={"results_count": len(results)},
+                    task_type="translation_efficiency"
+                )
                 
-                result = {
-                    "utr_sequence": utr_seq[:50] + "..." if len(utr_seq) > 50 else utr_seq,
-                    "translation_efficiency": float(translation_efficiency),
-                    "confidence": float(confidence),
-                    "gc_content": float(gc_content),
-                    "kozak_sequence": kozak_sequence,
-                    "shine_dalgarno": shine_dalgarno,
-                    "prediction": "high" if translation_efficiency > 7 else "medium" if translation_efficiency > 3 else "low"
-                }
+                # 记录成功指标
+                metrics_collector.record_metric("translation_efficiency_prediction_success", 1, 
+                                              {"sequences_count": len(utr_sequences), 
+                                               "batch_size": batch_size})
                 
-                results.append(result)
-            
-            return results
-            
-        except Exception as e:
-            self.logger.error(f"Failed to predict translation efficiency: {str(e)}")
-            raise
+                self.logger.info("翻译效率预测完成", 
+                               sequences_count=len(utr_sequences),
+                               results_count=len(results))
+                
+                return results
+                
+            except Exception as e:
+                self.logger.error("翻译效率预测失败", 
+                                error=str(e),
+                                sequences_count=len(utr_sequences),
+                                exc_info=True)
+                
+                # 记录失败指标
+                metrics_collector.record_metric("translation_efficiency_prediction_failure", 1, 
+                                              {"sequences_count": len(utr_sequences), 
+                                               "batch_size": batch_size})
+                raise
     
     def predict_mrna_stability(
         self, 
