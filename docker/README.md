@@ -16,6 +16,11 @@ docker/
 │   ├── requirements.txt
 │   ├── app.py
 │   └── build.sh
+├── agent_api/         # Agent API服务配置
+│   ├── Dockerfile
+│   ├── build.sh
+│   ├── agent_api.py
+│   └── test_api.py
 ├── docker-compose.yml # Docker Compose配置
 ├── prometheus.yml     # Prometheus监控配置
 ├── start_bio_models.sh # 生物序列模型启动脚本
@@ -145,6 +150,7 @@ cd docker/lucaone
 
 - DNABERT2 API: http://localhost:8000
 - LucaOne API: http://localhost:8002
+- Agent API: http://localhost:5000
 
 ### 监控端点
 
@@ -579,6 +585,507 @@ manager.stop_performance_collection()
 1. `examples/bio_models/container_model_example.py` - 容器模型管理示例
 2. `examples/bio_models/container_monitoring_example.py` - 容器监控示例
 3. `examples/bio_models/performance_collection_example.py` - 性能数据收集示例
+
+## 服务器部署步骤
+
+### 1. 服务器环境准备
+
+```bash
+# 安装Docker和Docker Compose
+curl -fsSL https://get.docker.com -o get-docker.sh
+sh get-docker.sh
+sudo usermod -aG docker $USER
+
+# 安装Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# 验证安装
+docker --version
+docker-compose --version
+
+# 创建项目目录
+mkdir -p /opt/tooluniverse
+cd /opt/tooluniverse
+
+# 克隆项目
+git clone <your-repo-url> .
+```
+
+### 2. 部署所有服务
+
+```bash
+# 进入docker目录
+cd docker
+
+# 构建并启动所有服务
+docker-compose up -d
+
+# 查看服务状态
+docker-compose ps
+
+# 查看日志
+docker-compose logs -f
+```
+
+### 3. 验证部署
+
+```bash
+# 检查DNABERT2服务
+curl http://localhost:8000/health
+
+# 检查LucaOne服务
+curl http://localhost:8002/health
+
+# 检查Agent API服务
+curl http://localhost:5000/health
+
+# 检查Prometheus
+curl http://localhost:9090/api/v1/status/config
+
+# 检查Grafana
+curl http://localhost:3000/api/health
+```
+
+## 上层Agent调用Bio工具的方法
+
+ToolUniverse提供了多种方式供上层agent调用生物序列模型：
+
+### 1. 通过Agent API（推荐）
+
+Agent API提供了一个RESTful接口，方便上层agent调用：
+
+```python
+import requests
+
+# API基础URL
+BASE_URL = "http://your-server:5000"
+
+# 列出所有可用模型
+response = requests.get(f"{BASE_URL}/models")
+models = response.json()['models']
+
+# 获取最佳模型
+data = {
+    "task_type": "classification",
+    "sequence_type": "DNA"
+}
+response = requests.post(f"{BASE_URL}/models/best", json=data)
+best_model = response.json()['best_model']
+
+# 分析序列
+data = {
+    "sequences": ["ATCGATCGATCG", "GCTAGCTAGCTA"],
+    "task_type": "classification",
+    "model_name": "dnabert2-container"  # 可选，不指定则自动选择
+}
+response = requests.post(f"{BASE_URL}/analyze", json=data)
+result = response.json()['result']
+```
+
+### 2. 通过统一接口工具
+
+```python
+from tooluniverse.bio_models.tools.unified_interface_tool import BioSequenceAnalysisTool
+
+# 初始化工具
+tool = BioSequenceAnalysisTool()
+
+# 进行序列分析
+result = tool.analyze(
+    sequences=["ATCGATCGATCG", "GCTAGCTAGCTA"],
+    task_type="classification",
+    model_name="dnabert2-container"  # 可选，不指定则自动选择
+)
+
+# 获取结果
+print(result)
+```
+
+### 3. 通过模型管理器
+
+```python
+from tooluniverse.bio_models.model_manager import ModelManager
+
+# 创建模型管理器
+manager = ModelManager()
+
+# 注册容器模型
+manager.register_model(
+    model_id="dnabert2-container",
+    model_type="dnabert2",
+    deployment_type="container",
+    container_config={
+        "host": "localhost",
+        "port": 8000
+    }
+)
+
+# 启动模型
+manager.start_model("dnabert2-container")
+
+# 进行预测
+results = manager.predict(
+    model_id="dnabert2-container",
+    sequences=["ATCGATCGATCG"],
+    task_type="classification"
+)
+```
+
+### 4. 通过HTTP API直接调用
+
+```python
+import requests
+
+# DNABERT2 API调用
+response = requests.post(
+    "http://your-server:8000/predict",
+    json={
+        "sequences": ["ATCGATCGATCG"],
+        "task_type": "classification"
+    }
+)
+result = response.json()
+
+# LucaOne API调用
+response = requests.post(
+    "http://your-server:8002/predict",
+    json={
+        "sequences": ["ATCGATCGATCG"],
+        "task_type": "prediction"
+    }
+)
+result = response.json()
+```
+
+### 5. 通过MCP（Model Context Protocol）
+
+ToolUniverse支持MCP，上层agent可以通过MCP协议调用生物工具：
+
+```bash
+# 启动MCP服务器
+tooluniverse-smcp
+
+# 然后agent可以通过MCP协议调用工具
+```
+
+## Agent API接口文档
+
+### 基础信息
+
+- 基础URL: `http://your-server:5000`
+- 内容类型: `application/json`
+- 字符编码: `UTF-8`
+
+### 主要端点
+
+#### 1. 健康检查
+
+检查API服务的健康状态。
+
+**端点**: `GET /health`
+
+**响应示例**:
+```json
+{
+  "status": "healthy",
+  "service": "ToolUniverse Bio Tools API"
+}
+```
+
+#### 2. 列出模型
+
+获取所有可用模型列表。
+
+**端点**: `GET /models`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "models": ["dnabert2-container", "lucaone-container"]
+}
+```
+
+#### 3. 列出已加载模型
+
+获取所有已加载的模型列表。
+
+**端点**: `GET /models/loaded`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "loaded_models": ["dnabert2-container"]
+}
+```
+
+#### 4. 获取最佳模型
+
+根据任务类型和序列类型获取最佳模型。
+
+**端点**: `POST /models/best`
+
+**请求参数**:
+```json
+{
+  "task_type": "classification",
+  "sequence_type": "DNA"
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "best_model": "dnabert2-container"
+}
+```
+
+#### 5. 分析序列
+
+分析生物序列。
+
+**端点**: `POST /analyze`
+
+**请求参数**:
+```json
+{
+  "sequences": ["ATCGATCGATCG", "GCTAGCTAGCTA"],
+  "task_type": "classification",
+  "model_name": "dnabert2-container",  // 可选
+  "sequence_type": "DNA"  // 可选
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "result": {
+    "predictions": [...],
+    "metadata": {
+      "task_type": "classification",
+      "sequence_type": "DNA",
+      "model_name": "dnabert2-container",
+      "sequence_count": 2
+    }
+  }
+}
+```
+
+#### 6. 获取支持的任务类型
+
+获取所有支持的任务类型。
+
+**端点**: `GET /tasks`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "tasks": ["classification", "extraction", "prediction", "annotation"]
+}
+```
+
+#### 7. 获取支持的序列类型
+
+获取所有支持的序列类型。
+
+**端点**: `GET /sequence-types`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "sequence_types": ["DNA", "RNA", "protein"]
+}
+```
+
+#### 8. 获取模型信息
+
+获取指定模型的详细信息。
+
+**端点**: `GET /model/{model_name}/info`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "model_info": {
+    "name": "dnabert2-container",
+    "type": "dnabert2",
+    "version": "1.0.0",
+    "description": "DNABERT2容器模型",
+    "supported_tasks": ["classification", "extraction"],
+    "supported_sequences": ["DNA", "RNA"]
+  }
+}
+```
+
+#### 9. 加载模型
+
+加载指定模型。
+
+**端点**: `POST /model/{model_name}/load`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "模型 dnabert2-container 加载成功"
+}
+```
+
+#### 10. 卸载模型
+
+卸载指定模型。
+
+**端点**: `POST /model/{model_name}/unload`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "模型 dnabert2-container 卸载成功"
+}
+```
+
+## 监控和日志
+
+### Prometheus监控
+
+- 访问地址: http://your-server:9090
+- 监控指标:
+  - 容器CPU使用率
+  - 容器内存使用率
+  - 容器网络IO
+  - 模型请求延迟
+  - 模型请求成功率
+
+### Grafana仪表板
+
+- 访问地址: http://your-server:3000
+- 默认用户名/密码: admin/admin
+- 预配置仪表板:
+  - 容器资源监控
+  - 模型性能监控
+  - 请求统计
+
+### 日志查看
+
+```bash
+# 查看所有服务日志
+docker-compose logs -f
+
+# 查看特定服务日志
+docker-compose logs -f dnabert2
+docker-compose logs -f lucaone
+docker-compose logs -f agent-api
+```
+
+## 常见问题
+
+### 1. 容器启动失败
+
+```bash
+# 查看容器日志
+docker-compose logs [service_name]
+
+# 检查容器状态
+docker-compose ps
+
+# 重启服务
+docker-compose restart [service_name]
+```
+
+### 2. 模型加载失败
+
+```bash
+# 检查模型文件是否存在
+ls -la ./models/
+
+# 检查容器内模型文件
+docker exec -it [container_name] ls -la /app/models/
+
+# 检查容器资源限制
+docker stats [container_name]
+```
+
+### 3. API调用失败
+
+```bash
+# 检查API服务状态
+curl http://localhost:5000/health
+
+# 检查网络连接
+docker network ls
+docker network inspect [network_name]
+
+# 检查端口映射
+docker-compose ps
+```
+
+## 性能优化
+
+### 1. 资源配置
+
+根据服务器配置调整docker-compose.yml中的资源限制：
+
+```yaml
+deploy:
+  resources:
+    limits:
+      memory: 16G  # 根据实际内存调整
+      cpus: '4'    # 根据实际CPU核心数调整
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
+```
+
+### 2. 模型优化
+
+- 使用量化模型减少内存使用
+- 启用模型缓存减少加载时间
+- 调整批处理大小提高吞吐量
+
+### 3. 网络优化
+
+- 使用专用网络减少延迟
+- 配置负载均衡提高可用性
+- 启用HTTP/2提高传输效率
+
+## 安全考虑
+
+1. **访问控制**: 配置防火墙规则限制API访问
+2. **认证授权**: 实现API密钥或OAuth认证
+3. **数据加密**: 使用HTTPS加密传输数据
+4. **审计日志**: 记录所有API调用和操作
+5. **容器安全**: 使用非root用户运行容器
+
+## 扩展和定制
+
+### 添加新模型
+
+1. 在docker目录下创建新的模型目录
+2. 编写Dockerfile和应用代码
+3. 更新docker-compose.yml添加新服务
+4. 更新ModelManager支持新模型类型
+
+### 自定义API
+
+1. 修改agent_api.py添加新的端点
+2. 更新API文档
+3. 添加相应的测试用例
+
+### 集成外部系统
+
+1. 添加消息队列支持异步处理
+2. 集成数据库存储结果
+3. 连接外部监控系统
 
 ## 部署指南
 

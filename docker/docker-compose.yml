@@ -100,6 +100,30 @@ services:
     networks:
       - model-network
 
+  agent-api:
+    build:
+      context: ./agent_api
+      dockerfile: Dockerfile
+    image: tooluniverse/agent-api:latest
+    container_name: agent-api-server
+    ports:
+      - "5000:5000"  # API端口
+    environment:
+      - PYTHONPATH=/app/src
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - dnabert2
+      - lucaone
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 40s
+    networks:
+      - model-network
+
 networks:
   model-network:
     driver: bridge
