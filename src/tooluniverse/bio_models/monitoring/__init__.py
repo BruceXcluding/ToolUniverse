@@ -26,16 +26,38 @@ except ImportError:
     print("Warning: torch not available, GPU memory monitoring will be limited")
 
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
+from .dashboard import get_metrics_collector, MetricsCollector
+
+# 创建全局指标收集器实例 - 延迟初始化
+def get_metrics_collector_instance():
+    """获取全局指标收集器实例"""
+    return get_metrics_collector()
+
+# 为了向后兼容，创建一个属性访问器
+class _MetricsCollectorProxy:
+    """指标收集器代理，用于延迟初始化"""
+    def __getattr__(self, name):
+        collector = get_metrics_collector()
+        return getattr(collector, name)
+
+metrics_collector = _MetricsCollectorProxy()
 
 
-# Prometheus指标定义
-MODEL_LOAD_TIME = Histogram('bio_model_load_time_seconds', 'Time spent loading models', ['model_name'])
-INFERENCE_TIME = Histogram('bio_inference_time_seconds', 'Time spent on inference', ['model_name', 'task_type'])
-GPU_MEMORY_USAGE = Gauge('bio_gpu_memory_usage_bytes', 'GPU memory usage', ['gpu_id'])
-CPU_USAGE = Gauge('bio_cpu_usage_percent', 'CPU usage percentage')
-MEMORY_USAGE = Gauge('bio_memory_usage_bytes', 'Memory usage in bytes')
-MODEL_LOAD_COUNTER = Counter('bio_model_loads_total', 'Total model loads', ['model_name', 'status'])
-INFERENCE_COUNTER = Counter('bio_inferences_total', 'Total inferences', ['model_name', 'task_type', 'status'])
+# Prometheus指标定义 - 避免重复注册
+try:
+    MODEL_LOAD_TIME = Histogram('bio_model_load_time_seconds', 'Time spent loading models', ['model_name'])
+    INFERENCE_TIME = Histogram('bio_inference_time_seconds', 'Time spent on inference', ['model_name', 'task_type'])
+    GPU_MEMORY_USAGE = Gauge('bio_gpu_memory_usage_bytes', 'GPU memory usage', ['gpu_id'])
+    CPU_USAGE = Gauge('bio_cpu_usage_percent', 'CPU usage percentage')
+    MEMORY_USAGE = Gauge('bio_memory_usage_bytes', 'Memory usage in bytes')
+    MODEL_LOAD_COUNTER = Counter('bio_model_loads_total', 'Total model loads', ['model_name', 'status'])
+    INFERENCE_COUNTER = Counter('bio_inferences_total', 'Total inferences', ['model_name', 'task_type', 'status'])
+except ValueError as e:
+    # 如果指标已经存在，跳过注册
+    if "Duplicated timeseries" in str(e):
+        pass
+    else:
+        raise
 
 
 class PerformanceMonitor:

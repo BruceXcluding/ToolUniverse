@@ -28,7 +28,8 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
 
-from . import get_logger, performance_monitor
+# Import these inside functions to avoid circular imports
+# from . import get_logger, performance_monitor
 
 
 class MetricsCollector:
@@ -37,6 +38,8 @@ class MetricsCollector:
     def __init__(self):
         self.metrics_history = []
         self.model_metrics = {}
+        # 延迟导入以避免循环导入
+        from . import get_logger
         self.logger = get_logger(__name__)
     
     def add_metric(self, metric_name: str, value: float, tags: Dict[str, str] = None) -> None:
@@ -71,6 +74,15 @@ class MetricsCollector:
         if len(self.model_metrics[model_name][metric_type]) > 1000:
             self.model_metrics[model_name][metric_type] = self.model_metrics[model_name][metric_type][-500:]
     
+    def record_metric(self, metric_name: str, value: float, tags: Dict[str, str] = None) -> None:
+        """记录指标，与add_metric方法功能相同"""
+        self.add_metric(metric_name, value, tags)
+    
+    def add_container_metric(self, container_name: str, metric_type: str, value: float) -> None:
+        """添加容器特定指标"""
+        metric_name = f"container_{container_name}_{metric_type}"
+        self.add_metric(metric_name, value, {"container": container_name, "type": metric_type})
+    
     def get_recent_metrics(self, metric_name: str, count: int = 100) -> List[Dict[str, Any]]:
         """获取最近的指标"""
         filtered = [m for m in self.metrics_history if m["name"] == metric_name]
@@ -84,8 +96,15 @@ class MetricsCollector:
         return self.model_metrics[model_name][metric_type][-count:] if self.model_metrics[model_name][metric_type] else []
 
 
-# 全局指标收集器
-metrics_collector = MetricsCollector()
+# 全局指标收集器 - 延迟初始化以避免循环导入
+metrics_collector = None
+
+def get_metrics_collector():
+    """获取全局指标收集器实例"""
+    global metrics_collector
+    if metrics_collector is None:
+        metrics_collector = MetricsCollector()
+    return metrics_collector
 
 
 def create_dashboard() -> None:
@@ -127,6 +146,9 @@ def create_dashboard() -> None:
 def display_system_resources() -> None:
     """显示系统资源使用情况"""
     st.header("系统资源使用情况")
+    
+    # 延迟导入以避免循环导入
+    from . import performance_monitor
     
     # 获取系统资源信息
     cpu_memory = performance_monitor.get_cpu_memory_info()
@@ -223,16 +245,19 @@ def display_model_performance() -> None:
     """显示模型性能指标"""
     st.header("模型性能指标")
     
-    if not metrics_collector.model_metrics:
+    # 获取指标收集器实例
+    collector = get_metrics_collector()
+    
+    if not collector.model_metrics:
         st.info("暂无模型性能数据")
         return
     
     # 模型选择
-    model_names = list(metrics_collector.model_metrics.keys())
+    model_names = list(collector.model_metrics.keys())
     selected_model = st.selectbox("选择模型", model_names)
     
     if selected_model:
-        model_data = metrics_collector.model_metrics[selected_model]
+        model_data = collector.model_metrics[selected_model]
         
         # 显示不同类型的指标
         metric_types = list(model_data.keys())

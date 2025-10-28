@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Union, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
 
-from ..monitoring import get_logger, monitor_performance, metrics_collector
+from .monitoring import get_logger, monitor_performance, metrics_collector
 
 
 class ContainerStatus(Enum):
@@ -438,11 +438,22 @@ class ContainerRuntime:
             api_endpoint = None
             metrics_endpoint = None
             
-            # 假设8000端口是API端口，8001端口是监控端口
-            if "8000" in ports:
-                api_endpoint = f"http://localhost:{ports['8000']}"
-            if "8001" in ports:
-                metrics_endpoint = f"http://localhost:{ports['8001']}"
+            # 检查常见的API端口和监控端口
+            # 支持多种端口配置：8000/8001, 8001/8011, 8002/8012等
+            api_ports = ["8000", "8001", "8002", "8003", "8004", "8005", "8006"]
+            metrics_ports = ["8010", "8011", "8012", "8013", "8014", "8015", "8016"]
+            
+            # 查找API端点
+            for port in api_ports:
+                if port in ports:
+                    api_endpoint = f"http://localhost:{ports[port]}"
+                    break
+            
+            # 查找监控端点
+            for port in metrics_ports:
+                if port in ports:
+                    metrics_endpoint = f"http://localhost:{ports[port]}"
+                    break
             
             # 获取创建和启动时间
             created_at = container.attrs.get("Created", "")

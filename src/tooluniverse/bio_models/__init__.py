@@ -6,6 +6,8 @@ from .task_types import TaskType, SequenceType, ModelStatus, DeviceType
 from .tools import (
     BioSequenceAnalysisTool,
     LucaOneTool,
+    LucaOneAppTool,
+    LucaOneTasksTool,
     EmbeddingTool,
     ClassificationTool,
     GenerationTool,
@@ -24,6 +26,8 @@ __all__ = [
     "DeviceType",
     "BioSequenceAnalysisTool",
     "LucaOneTool",
+    "LucaOneAppTool",
+    "LucaOneTasksTool",
     "EmbeddingTool",
     "ClassificationTool",
     "GenerationTool",

@@ -5,13 +5,17 @@ ToolUniverse 模型容器API测试脚本
 """
 
 import sys
+import os
 import time
 import json
 import argparse
 from typing import Dict, List, Any
 
 # 添加项目路径到sys.path
-sys.path.append('/Users/yigex/Documents/trae_projects/deployment/ToolUniverse')
+# 获取当前脚本所在目录的父目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
 
 from src.tooluniverse.bio_models.container_client import (
     DNABERT2Client,

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import structlog
-from prometheus_client import start_http_server, Counter, Histogram, Gauge
+from prometheus_client import start_http_server, Counter, Histogram, Gauge, REGISTRY
 import psutil
 
 # 配置结构化日志
@@ -37,6 +37,10 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
+
+# 清理已注册的指标以避免重复注册
+for collector in list(REGISTRY._collector_to_names):
+    REGISTRY.unregister(collector)
 
 # Prometheus指标
 REQUEST_COUNT = Counter('dnabert2_requests_total', 'Total requests', ['method', 'endpoint', 'status'])
@@ -92,8 +96,8 @@ async def lifespan(app: FastAPI):
     logger.info("DNABERT2服务启动中...")
     
     # 启动Prometheus指标服务器
-    start_http_server(8001)
-    logger.info("Prometheus指标服务器已启动", port=8001)
+    start_http_server(8011)
+    logger.info("Prometheus指标服务器已启动", port=8011)
     
     # 初始化模型
     await initialize_model()
@@ -324,7 +328,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=False,
         log_level="info"
     )

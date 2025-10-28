@@ -11,6 +11,7 @@ from .structure_prediction_tool import StructurePredictionTool
 from .interaction_tool import InteractionTool
 from .annotation_tool import AnnotationTool
 from .task_specific_tool import TaskSpecificTool
+from .lucaone_tool import LucaOneTool
 
 # 新实现的模型工具
 from .lucaoneapp_tool import LucaOneAppTool
@@ -32,6 +33,7 @@ __all__ = [
     "InteractionTool",
     "AnnotationTool",
     "TaskSpecificTool",
+    "LucaOneTool",
     # 新实现的模型工具
     "LucaOneAppTool",
     "LucaOneTasksTool",

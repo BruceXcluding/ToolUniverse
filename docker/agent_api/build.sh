@@ -47,7 +47,7 @@ show_help() {
 # 构建Docker镜像
 build_image() {
     log_info "构建ToolUniverse Agent API Docker镜像..."
-    docker build -t tooluniverse/agent-api:latest .
+    docker build -t tooluniverse/agent-api:latest -f Dockerfile ../..
     log_info "镜像构建完成"
 }
 

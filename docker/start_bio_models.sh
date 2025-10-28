@@ -1,65 +1,180 @@
 #!/bin/bash
+# 启动ToolUniverse生物模型服务
 
-# 生物序列模型部署脚本
-# 此脚本用于设置环境变量并启动ToolUniverse生物序列模型服务
+set -e
 
-# 设置默认值
-DEFAULT_MODEL_PATH="/data/models"
-DEFAULT_PORT=8000
-DEFAULT_HOST="0.0.0.0"
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
 
-# 从环境变量或参数中获取配置
-MODEL_PATH=${MODEL_BASE_PATH:-$DEFAULT_MODEL_PATH}
-PORT=${PORT:-$DEFAULT_PORT}
-HOST=${HOST:-$DEFAULT_HOST}
+# 日志函数
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
 
-echo "========================================="
-echo "ToolUniverse 生物序列模型服务启动脚本"
-echo "========================================="
-echo "模型路径: $MODEL_PATH"
-echo "服务端口: $PORT"
-echo "监听地址: $HOST"
-echo "========================================="
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
 
-# 检查模型路径是否存在
-if [ ! -d "$MODEL_PATH" ]; then
-    echo "警告: 模型路径不存在: $MODEL_PATH"
-    echo "请确保模型文件已正确部署或设置正确的MODEL_BASE_PATH环境变量"
-    echo "继续启动可能会导致模型加载失败..."
-    read -p "是否继续? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "已取消启动"
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 检查Docker是否运行
+check_docker() {
+    if ! docker info > /dev/null 2>&1; then
+        log_error "Docker未运行，请先启动Docker"
         exit 1
     fi
-fi
-
-# 设置环境变量
-export MODEL_BASE_PATH=$MODEL_PATH
-
-# 检查Python环境
-if ! command -v python &> /dev/null; then
-    echo "错误: 未找到Python环境"
-    exit 1
-fi
-
-# 检查必要的Python包
-echo "检查Python依赖..."
-python -c "import torch; print('PyTorch版本:', torch.__version__)" || {
-    echo "错误: 未安装PyTorch"
-    exit 1
+    log_info "Docker运行正常"
 }
 
-python -c "import transformers; print('Transformers版本:', transformers.__version__)" || {
-    echo "错误: 未安装Transformers"
-    exit 1
+# 检查Docker Compose是否可用
+check_docker_compose() {
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        log_error "Docker Compose未安装或不可用"
+        exit 1
+    fi
+    
+    # 确定使用哪个命令
+    if docker compose version &> /dev/null; then
+        DOCKER_COMPOSE_CMD="docker compose"
+    else
+        DOCKER_COMPOSE_CMD="docker-compose"
+    fi
+    
+    log_info "使用命令: $DOCKER_COMPOSE_CMD"
 }
 
-# 启动服务
-echo "启动ToolUniverse生物序列模型服务..."
-echo "访问地址: http://$HOST:$PORT"
-echo "按Ctrl+C停止服务"
-echo
+# 启动所有服务
+start_services() {
+    log_info "启动ToolUniverse生物模型服务..."
+    
+    # 使用docker-compose启动所有服务
+    $DOCKER_COMPOSE_CMD up -d
+    
+    log_info "所有服务已启动"
+}
 
-# 启动FastAPI应用
-python -m uvicorn src.tooluniverse.main:app --host $HOST --port $PORT --reload
+# 等待服务就绪
+wait_for_services() {
+    log_info "等待服务就绪..."
+    
+    # 等待DNABERT2容器
+    local max_attempts=30
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s http://localhost:8001/health > /dev/null 2>&1; then
+            log_info "DNABERT2服务已就绪"
+            break
+        fi
+        attempt=$((attempt+1))
+        sleep 2
+    done
+    
+    if [ $attempt -eq $max_attempts ]; then
+        log_error "DNABERT2服务启动超时"
+    fi
+    
+    # 等待LucaOne容器
+    attempt=0
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s http://localhost:8002/health > /dev/null 2>&1; then
+            log_info "LucaOne服务已就绪"
+            break
+        fi
+        attempt=$((attempt+1))
+        sleep 2
+    done
+    
+    if [ $attempt -eq $max_attempts ]; then
+        log_error "LucaOne服务启动超时"
+    fi
+    
+    # 等待Agent API
+    attempt=0
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s http://localhost:5000/health > /dev/null 2>&1; then
+            log_info "Agent API服务已就绪"
+            break
+        fi
+        attempt=$((attempt+1))
+        sleep 2
+    done
+    
+    if [ $attempt -eq $max_attempts ]; then
+        log_error "Agent API服务启动超时"
+    fi
+}
+
+# 显示服务状态
+show_status() {
+    log_info "服务状态:"
+    
+    # 显示容器状态
+    $DOCKER_COMPOSE_CMD ps
+    
+    # 显示服务访问地址
+    echo ""
+    echo "服务访问地址:"
+    echo "- Agent API: http://localhost:5000"
+    echo "- DNABERT2: http://localhost:8001"
+    echo "- LucaOne: http://localhost:8002"
+    echo "- Prometheus: http://localhost:9090"
+    echo "- Grafana: http://localhost:3000 (admin/admin)"
+}
+
+# 主函数
+main() {
+    log_info "启动ToolUniverse生物模型服务..."
+    
+    # 检查Docker
+    check_docker
+    
+    # 检查Docker Compose
+    check_docker_compose
+    
+    # 启动服务
+    start_services
+    
+    # 等待服务就绪
+    wait_for_services
+    
+    # 显示状态
+    show_status
+    
+    log_info "所有服务启动完成！"
+}
+
+# 处理命令行参数
+case "${1:-}" in
+    stop)
+        log_info "停止所有服务..."
+        
+        # 停止并删除所有服务
+        $DOCKER_COMPOSE_CMD down
+        
+        log_info "所有服务已停止"
+        ;;
+    status)
+        show_status
+        ;;
+    restart)
+        $0 stop
+        sleep 3
+        $0 start
+        ;;
+    logs)
+        $DOCKER_COMPOSE_CMD logs -f
+        ;;
+    start|"")
+        main
+        ;;
+    *)
+        echo "用法: $0 {start|stop|restart|status|logs}"
+        exit 1
+        ;;
+esac

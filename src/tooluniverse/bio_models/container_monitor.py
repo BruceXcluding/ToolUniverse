@@ -15,7 +15,7 @@ import json
 import psutil
 
 from .container_runtime import ContainerRuntime, ContainerStatus, ContainerInfo
-from ..utils.metrics_collector import MetricsCollector
+from .monitoring import MetricsCollector
 
 logger = logging.getLogger(__name__)
 

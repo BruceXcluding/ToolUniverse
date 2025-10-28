@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import csv
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Tuple
 from dataclasses import dataclass
@@ -92,6 +93,7 @@ class ModelManager:
         self.loaded_models: Dict[str, BaseModel] = {}
         self.config = {}
         self.gpu_scheduler = GPUScheduler()
+        self.lock = threading.Lock()  # 添加线程锁
         
         # 初始化容器运行时
         self.container_runtime = ContainerRuntime()
@@ -126,6 +128,126 @@ class ModelManager:
             )
             if os.path.exists(default_config_path):
                 self._load_config(default_config_path)
+        
+        # 自动发现已运行的容器
+        self._discover_containers()
+    
+    def _discover_containers(self):
+        """自动发现并注册已运行的容器"""
+        try:
+            # 获取所有运行的容器
+            containers = self.container_runtime.list_containers()
+            self.logger.info(f"发现 {len(containers)} 个容器")
+            
+            for container_info in containers:
+                # 获取容器名称
+                container_name = container_info.name
+                self.logger.info(f"处理容器: {container_name}, 状态: {container_info.status}")
+                
+                # 检查是否已经注册
+                if container_name not in self.container_configs:
+                    # 检查容器状态
+                    if container_info.status == ContainerStatus.RUNNING:
+                        # 将ContainerInfo对象转换为字典格式以便处理
+                        container_dict = {
+                            'name': container_info.name,
+                            'status': container_info.status.value,
+                            'image': container_info.image,
+                            'ports': container_info.ports,
+                            'api_endpoint': container_info.api_endpoint,
+                            'metrics_endpoint': container_info.metrics_endpoint
+                        }
+                        
+                        # 尝试识别模型类型
+                        model_type = self._identify_model_type(container_name, container_dict)
+                        self.logger.info(f"容器 {container_name} 识别的模型类型: {model_type}")
+                        
+                        if model_type:
+                            # 获取容器端口信息
+                            ports = self._extract_ports(container_dict)
+                            self.logger.info(f"容器 {container_name} 提取的端口: {ports}")
+                            
+                            # 自动注册容器
+                            config = ContainerModelConfig(
+                                name=container_name,
+                                model_type=model_type,
+                                image=container_dict.get('image', ''),
+                                ports=ports,
+                                environment={},  # 使用environment而不是env_vars
+                                volumes={},
+                                gpu_enabled=False
+                            )
+                            self.register_container_model(config)
+                            
+                            self.logger.info(f"自动发现并注册容器模型: {container_name} ({model_type.value})")
+                        else:
+                            self.logger.warning(f"无法识别容器 {container_name} 的模型类型")
+                    else:
+                        self.logger.info(f"容器 {container_name} 未运行，状态: {container_info.status}")
+                else:
+                    self.logger.info(f"容器 {container_name} 已经注册")
+        
+        except Exception as e:
+            self.logger.error(f"自动发现容器失败: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+    
+    def _identify_model_type(self, container_name: str, container_info: dict) -> Optional[ModelType]:
+        """根据容器信息识别模型类型"""
+        # 根据容器名称识别
+        if 'dnabert' in container_name.lower():
+            return ModelType.DNABERT2
+        elif 'luca' in container_name.lower():  # 修改为更宽泛的匹配
+            return ModelType.LUCAONE
+        
+        # 根据镜像名称识别
+        image = container_info.get('image', '').lower()
+        if 'dnabert' in image:
+            return ModelType.DNABERT2
+        elif 'luca' in image:
+            return ModelType.LUCAONE
+        
+        # 根据环境变量识别
+        env_vars = container_info.get('env_vars', {})
+        if 'MODEL_TYPE' in env_vars:
+            model_type_str = env_vars['MODEL_TYPE'].lower()
+            if 'dnabert' in model_type_str:
+                return ModelType.DNABERT2
+            elif 'luca' in model_type_str:
+                return ModelType.LUCAONE
+        
+        return None
+    
+    def _extract_ports(self, container_info: dict) -> Dict[str, int]:
+        """从容器信息中提取端口映射"""
+        ports = {}
+        
+        # 获取端口映射信息
+        port_bindings = container_info.get('ports', {})
+        
+        # 尝试识别API端口和监控端口
+        for container_port, host_bindings in port_bindings.items():
+            if isinstance(host_bindings, list) and host_bindings:
+                host_port = host_bindings[0].get('HostPort')
+                if host_port:
+                    # 根据端口号识别用途
+                    if int(container_port) in [8000, 8001, 8002, 8003]:
+                        ports['api'] = int(host_port)
+                    elif int(container_port) in [8011, 8012, 8013]:
+                        ports['metrics'] = int(host_port)
+        
+        # 如果无法识别，使用默认值
+        if 'api' not in ports and 'metrics' not in ports:
+            # 尝试从容器信息中获取API端点
+            api_endpoint = container_info.get('api_endpoint', '')
+            if api_endpoint:
+                # 从URL中提取端口
+                import re
+                match = re.search(r':(\d+)', api_endpoint)
+                if match:
+                    ports['api'] = int(match.group(1))
+        
+        return ports
     
     def _load_config(self, config_path: str):
         """加载模型配置"""

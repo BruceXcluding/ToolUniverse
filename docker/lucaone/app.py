@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import structlog
-from prometheus_client import start_http_server, Counter, Histogram, Gauge
+from prometheus_client import start_http_server, Counter, Histogram, Gauge, REGISTRY
 import psutil
 
 # 配置结构化日志
@@ -38,6 +38,10 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
+# 清理已注册的指标以避免重复注册
+for collector in list(REGISTRY._collector_to_names):
+    REGISTRY.unregister(collector)
+
 # Prometheus指标
 REQUEST_COUNT = Counter('lucaone_requests_total', 'Total requests', ['method', 'endpoint', 'status'])
 REQUEST_LATENCY = Histogram('lucaone_request_duration_seconds', 'Request latency')
@@ -56,7 +60,7 @@ model_loaded = False
 class PredictionRequest(BaseModel):
     """预测请求模型"""
     sequences: List[str] = Field(..., description="生物序列列表(DNA/RNA/蛋白质)")
-    task_type: str = Field(..., description="任务类型", regex="^(embedding|classification|property_prediction|interaction|annotation)$")
+    task_type: str = Field(..., description="任务类型", pattern="^(embedding|classification|property_prediction|interaction|annotation)$")
     max_sequence_length: int = Field(default=1024, description="最大序列长度")
     batch_size: int = Field(default=1, description="批处理大小")
 
@@ -92,8 +96,8 @@ async def lifespan(app: FastAPI):
     logger.info("LucaOne服务启动中...")
     
     # 启动Prometheus指标服务器
-    start_http_server(8001)
-    logger.info("Prometheus指标服务器已启动", port=8001)
+    start_http_server(8012)
+    logger.info("Prometheus指标服务器已启动", port=8012)
     
     # 初始化模型
     await initialize_model()
@@ -343,7 +347,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=8000,
+        port=8002,
         reload=False,
         log_level="info"
     )

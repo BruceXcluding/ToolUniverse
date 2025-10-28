@@ -8,8 +8,8 @@ services:
     image: tooluniverse/dnabert2:latest
     container_name: dnabert2-server
     ports:
-      - "8000:8000"  # API端口
-      - "8001:8001"  # 监控指标端口
+      - "8001:8001"  # API端口
+      - "8011:8011"  # 监控指标端口
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
@@ -26,7 +26,7 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
       timeout: 30s
       retries: 3
@@ -41,8 +41,8 @@ services:
     image: tooluniverse/lucaone:latest
     container_name: lucaone-server
     ports:
-      - "8002:8000"  # API端口
-      - "8003:8001"  # 监控指标端口
+      - "8002:8002"  # API端口
+      - "8012:8012"  # 监控指标端口
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
@@ -59,7 +59,7 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 30s
       retries: 3
@@ -102,8 +102,8 @@ services:
 
   agent-api:
     build:
-      context: ./agent_api
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: ./docker/agent_api/Dockerfile
     image: tooluniverse/agent-api:latest
     container_name: agent-api-server
     ports:
@@ -111,6 +111,8 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - PYTHONUNBUFFERED=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # 挂载Docker socket
     depends_on:
       - dnabert2
       - lucaone
