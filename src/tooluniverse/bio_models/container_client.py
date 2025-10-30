@@ -427,30 +427,45 @@ class ModelContainerClient:
         if isinstance(task_type, TaskType):
             task_type = task_type.value
         
+        # 使用DNABERT2服务端支持的/predict端点，而不是/predict/batch
         data = {
             "sequences": sequences,
-            "task_type": task_type,
-            "options": options or {}
+            "task_type": task_type
         }
         
-        response = self._make_request('POST', '/predict/batch', data)
+        # 添加可选参数
+        if options:
+            if "max_sequence_length" in options:
+                data["max_sequence_length"] = options["max_sequence_length"]
+            if "batch_size" in options:
+                data["batch_size"] = options["batch_size"]
         
-        if not response.get('success', False):
+        response = self._make_request('POST', '/predict', data)
+        
+        if 'success' in response and not response.get('success', False):
             raise Exception(f"批量预测失败: {response.get('message', '未知错误')}")
         
-        result_data = response.get('data', {})
-        predictions = result_data.get('predictions', [])
+        # 处理DNABERT2服务端的响应格式
+        api_results = response.get('results', [])
+        prediction_results = []
         
-        results = []
-        for pred in predictions:
-            results.append(PredictionResult(
-                prediction=pred.get('prediction'),
-                confidence=pred.get('confidence'),
-                sequence_length=len(pred.get('sequence', '')),
-                details=pred.get('details')
+        for i, result in enumerate(api_results):
+            # 对于嵌入任务，使用embedding字段作为prediction
+            prediction = result.get('prediction')
+            if task_type == "embedding" and 'embedding' in result:
+                prediction = result.get('embedding')
+            # 对于分类任务，使用predicted_label或其他适当字段
+            elif task_type == "classification":
+                prediction = result.get('predicted_label')
+            
+            prediction_results.append(PredictionResult(
+                prediction=prediction,
+                confidence=result.get('scores'),  # 分类任务使用scores作为置信度
+                sequence_length=len(sequences[i]),
+                details=result
             ))
         
-        return results
+        return prediction_results
     
     def get_metrics(self) -> Dict:
         """
@@ -544,6 +559,26 @@ class DNABERT2Client(ModelContainerClient):
         """
         options = {"return_confidence": return_confidence}
         return self.predict_batch(sequences, TaskType.PROMOTER_PREDICTION, options)
+    
+    def classify_batch(
+        self,
+        sequences: List[str],
+        kwargs: Dict = None
+    ) -> List[PredictionResult]:
+        """
+        批量分类DNA序列
+        
+        Args:
+            sequences: DNA序列列表
+            kwargs: 其他参数
+            
+        Returns:
+            分类结果列表
+        """
+        if kwargs is None:
+            kwargs = {}
+        options = {"return_confidence": kwargs.get("return_confidence", True)}
+        return self.predict_batch(sequences, TaskType.CLASSIFICATION, options)
 
 
 class LucaOneClient(ModelContainerClient):

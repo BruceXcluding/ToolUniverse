@@ -1191,7 +1191,30 @@ class ModelManager:
                             "container_model": True
                         }
                     elif task_type == "classification":
-                        result = client.classify_batch(sequences, kwargs)
+                        # 处理分类任务
+                        prediction_results = client.classify_batch(sequences, kwargs)
+                        
+                        # 转换结果格式为API期望的格式
+                        formatted_results = []
+                        for i, result in enumerate(prediction_results):
+                            seq = sequences[i]  # 使用对应的序列
+                            formatted_results.append({
+                                "sequence": seq,
+                                "sequence_length": len(seq),
+                                "predicted_label": result.prediction,
+                                "scores": result.confidence,
+                                "details": result.details
+                            })
+                        
+                        return {
+                            "success": True,
+                            "results": formatted_results,
+                            "model_name": model_name,
+                            "model_type": model_type.value,
+                            "batch_size": len(sequences),
+                            "processing_time": time.time() - start_time,
+                            "container_model": True
+                        }
                     elif task_type == "extraction":
                         result = client.extract_batch_features(sequences, kwargs)
                     elif task_type == "annotation":

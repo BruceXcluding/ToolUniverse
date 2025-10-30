@@ -21,6 +21,10 @@ from .codonbert_tool import CodonBERTTool
 from .dnabert2_tool import DNABERT2Tool
 from .rnafm_tool import RNAFMTool
 from .utrlm_tool import UTRLMTool
+from .rna_fold_tool import RNAFoldTool
+from .blast_search_tool import BlastSearchTool
+from .jaspar_scan_tool import JasparScanTool
+from .seq_compare_tool import SeqCompareTool
 
 __all__ = [
     "BioSequenceAnalysisTool",
@@ -41,5 +45,10 @@ __all__ = [
     "CodonBERTTool",
     "DNABERT2Tool",
     "RNAFMTool",
-    "UTRLMTool"
+    "UTRLMTool",
+    # RNA工具包
+    "RNAFoldTool",
+    "BlastSearchTool",
+    "JasparScanTool",
+    "SeqCompareTool"
 ]

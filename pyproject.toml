@@ -45,7 +45,10 @@ dependencies = [
     "structlog>=23.1.0",
     "colorama>=0.4.6",
     "pynvml>=11.5.0",
-    "prometheus-client>=0.17.0"
+    "prometheus-client>=0.17.0",
+    "biopython>=1.86",
+    "pyjaspar>=2.0.0",
+    "viennarna>=2.7.0"
 ]
 requires-python = ">=3.10"
 readme = "README.md"
@@ -110,6 +113,11 @@ space = [
 ]
 all = [
     "tooluniverse[dev,docs,graph,visualization,space]",
+]
+rna = [
+    "biopython>=1.86",
+    "pyjaspar>=2.0.0",
+    "viennarna>=2.7.0"
 ]
 
 [project.urls]

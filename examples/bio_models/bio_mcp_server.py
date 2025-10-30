@@ -38,6 +38,11 @@ from tooluniverse.bio_models.tools.structure_prediction_tool import StructurePre
 from tooluniverse.bio_models.tools.task_specific_tool import TaskSpecificTool
 from tooluniverse.bio_models.tools.three_utrbert_tool import ThreeUTRBERTTool
 from tooluniverse.bio_models.tools.utrlm_tool import UTRLMTool
+# 导入RNA工具
+from tooluniverse.bio_models.tools.blast_search_tool import BlastSearchTool
+from tooluniverse.bio_models.tools.jaspar_scan_tool import JasparScanTool
+from tooluniverse.bio_models.tools.rna_fold_tool import RNAFoldTool
+from tooluniverse.bio_models.tools.seq_compare_tool import SeqCompareTool
 
 def main():
     """启动生物序列分析MCP服务器"""
@@ -66,7 +71,12 @@ def main():
         (StructurePredictionTool, "structure_prediction", "生物结构预测工具"),
         (TaskSpecificTool, "task_specific", "任务特定生物工具"),
         (ThreeUTRBERTTool, "three_utrbert", "3'UTR BERT模型工具"),
-        (UTRLMTool, "utrlm", "UTR语言模型工具")
+        (UTRLMTool, "utrlm", "UTR语言模型工具"),
+        # RNA工具
+        (BlastSearchTool, "blast_search", "BLAST序列搜索工具"),
+        (JasparScanTool, "jaspar_scan", "JASPAR Motif扫描工具"),
+        (RNAFoldTool, "rna_fold", "RNA二级结构预测工具"),
+        (SeqCompareTool, "seq_compare", "序列比对与相似度计算工具")
     ]
     
     for tool_class, tool_name, tool_desc in bio_tools:
