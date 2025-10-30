@@ -1,39 +1,35 @@
 # LucaOne模型容器
 FROM python:3.10-slim
 
-# 设置工作目录
 WORKDIR /app
 
-# 设置环境变量
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+# 1. 换源 & 装系统依赖 一条 RUN 搞定
+RUN if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's@deb.debian.org@mirrors.aliyun.com@g; s@security.debian.org@mirrors.aliyun.com@g' /etc/apt/sources.list; \
+    elif [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's@deb.debian.org@mirrors.aliyun.com@g; s@security.debian.org@mirrors.aliyun.com@g' /etc/apt/sources.list.d/debian.sources; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+        build-essential curl git \
+ && rm -rf /var/lib/apt/lists/*
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# 复制requirements文件
+# 2. 拷依赖 → 一次性用国内源安装
 COPY requirements.txt .
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
-# 安装Python依赖
-RUN pip install --no-cache-dir -r requirements.txt
+# 3. 拷代码
+COPY app.py .
 
-# 复制应用代码
-COPY . .
+# 4. 模型挂载点（运行时用 -v 把真实权重挂进来）
+ENV MODEL_PATH=/models/lucaone
+RUN mkdir -p /models/lucaone
 
-# 创建模型目录
-RUN mkdir -p /app/models
-
-# 暴露端口
+ENV PYTHONUNBUFFERED=1
 EXPOSE 8002 8012
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8002/health || exit 1
+# 5. 健康检查（允许通过 PORT 变量改监听口）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:${PORT:-8002}/health || exit 1
 
-# 启动命令
 CMD ["python", "app.py"]

@@ -285,7 +285,7 @@ class RNAFMModel:
                 
                 # 计算设计质量
                 # 这里只是模拟，实际质量应该由模型评估
-                quality_score = np.random.rand().astype(np.float32)
+                quality_score = np.float32(np.random.rand())
                 
                 # 计算GC含量
                 gc_count = rna_seq.count('G') + rna_seq.count('C')

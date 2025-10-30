@@ -1,0 +1,119 @@
+services:
+  # DNABERT2模型容器
+  dnabert2:
+    build:
+      context: ./docker/dnabert2
+      dockerfile: Dockerfile
+    container_name: dnabert2
+    ports:
+      - "8001:8001"
+      - "8011:8011"
+    volumes:
+      - /mnt/models/yigex/3rdparty/DNABERT_2/model:/models/dnabert2:ro
+      - ./logs:/app/logs
+    environment:
+        - MODEL_PATH=/models/dnabert2
+        - MODEL_BASE_PATH=/models/dnabert2
+        - DNABERT2_MODEL_PATH=/models/dnabert2
+        - LOG_DIR=/app/logs
+        - MAX_SEQUENCE_LENGTH=1024
+        - DEVICE=auto
+        # 移除CUDA_VISIBLE_DEVICES限制，允许容器访问所有GPU以支持智能选择
+    networks:
+      - tooluniverse-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 设置count=1表示每个容器使用一个GPU，但允许Docker智能分配
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # LUCA-ONE模型容器
+  lucaone:
+    build:
+      context: ./docker/lucaone
+      dockerfile: Dockerfile
+    container_name: lucaone
+    ports:
+      - "8002:8002"
+      - "8012:8012"
+    volumes:
+      - /mnt/models/yigex/3rdparty/LucaOne:/models/lucaone:ro
+      - /mnt/models/yigex/3rdparty/LucaOneApp/algorithms:/app/algorithms:ro
+      - ./logs:/app/logs:rw
+    environment:
+        - MODEL_PATH=/models/lucaone
+        - MODEL_BASE_PATH=/models/lucaone
+        - LUCAONE_MODEL_PATH=/models/lucaone
+        - LOG_DIR=/app/logs
+        - MAX_SEQUENCE_LENGTH=1024
+        - DEVICE=auto
+        - PYTHONPATH=/app
+    networks:
+      - tooluniverse-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # 设置count=1表示每个容器使用一个GPU
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # Prometheus监控服务
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - tooluniverse-net
+    restart: unless-stopped
+
+  # Grafana可视化服务
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - tooluniverse-net
+    restart: unless-stopped
+
+networks:
+  tooluniverse-net:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:

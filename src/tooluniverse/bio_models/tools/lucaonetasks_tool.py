@@ -148,7 +148,7 @@ class LucaOneTasksModel:
                     }
                 elif task_type == "regression":
                     # 回归任务，返回连续值
-                    result = np.random.rand().astype(np.float32)
+                    result = np.float32(np.random.rand())
                 elif task_type == "multi_label":
                     # 多标签任务，返回多个二分类结果
                     num_labels = 3  # 假设有3个标签

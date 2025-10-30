@@ -8,6 +8,7 @@ import re
 import csv
 import threading
 from datetime import datetime
+import time
 from typing import Dict, List, Optional, Union, Any, Tuple
 from dataclasses import dataclass
 import torch
@@ -62,6 +63,8 @@ class ContainerModelConfig:
     model_type: ModelType
     image: str
     ports: Dict[str, int]
+    supported_tasks: List[TaskType] = None
+    supported_sequences: List[SequenceType] = None
     environment: Dict[str, str] = None
     volumes: Dict[str, Dict[str, str]] = None
     gpu_enabled: bool = False
@@ -70,6 +73,10 @@ class ContainerModelConfig:
     healthcheck: Dict[str, Any] = None
     
     def __post_init__(self):
+        if self.supported_tasks is None:
+            self.supported_tasks = []
+        if self.supported_sequences is None:
+            self.supported_sequences = []
         if self.environment is None:
             self.environment = {}
         if self.volumes is None:
@@ -91,6 +98,7 @@ class ModelManager:
         self.logger = get_logger(__name__)
         self.models: Dict[str, BaseModel] = {}
         self.loaded_models: Dict[str, BaseModel] = {}
+        self.model_configs: Dict[str, ModelConfig] = {}
         self.config = {}
         self.gpu_scheduler = GPUScheduler()
         self.lock = threading.Lock()  # 添加线程锁
@@ -168,18 +176,102 @@ class ModelManager:
                             self.logger.info(f"容器 {container_name} 提取的端口: {ports}")
                             
                             # 自动注册容器
+                            # 根据模型类型设置支持的任务和序列类型
+                            supported_tasks = []
+                            supported_sequences = []
+                            
+                            if model_type == ModelType.DNABERT2:
+                                supported_tasks = [TaskType.EMBEDDING, TaskType.CLASSIFICATION, TaskType.FINE_TUNING]
+                                supported_sequences = [SequenceType.DNA]
+                            elif model_type == ModelType.LUCAONE:
+                                supported_tasks = [TaskType.EMBEDDING, TaskType.PREDICTION, TaskType.CLASSIFICATION]
+                                supported_sequences = [SequenceType.DNA, SequenceType.RNA, SequenceType.PROTEIN]
+                            
                             config = ContainerModelConfig(
                                 name=container_name,
                                 model_type=model_type,
                                 image=container_dict.get('image', ''),
                                 ports=ports,
+                                supported_tasks=supported_tasks,
+                                supported_sequences=supported_sequences,
                                 environment={},  # 使用environment而不是env_vars
                                 volumes={},
                                 gpu_enabled=False
                             )
                             self.register_container_model(config)
                             
+                            # 为已运行的容器创建客户端
+                            if container_info.api_endpoint:
+                                if model_type == ModelType.DNABERT2:
+                                    client = DNABERT2Client(container_info.api_endpoint)
+                                elif model_type == ModelType.LUCAONE:
+                                    client = LucaOneClient(container_info.api_endpoint)
+                                else:
+                                    client = ModelContainerClient(container_info.api_endpoint)
+                                
+                                self.container_clients[container_name] = client
+                                self.logger.info(f"已为容器 {container_name} 创建客户端: {container_info.api_endpoint}")
+                            
                             self.logger.info(f"自动发现并注册容器模型: {container_name} ({model_type.value})")
+                            
+                            # 创建并注册模型实例到models字典中
+                            class ContainerModel(BaseModel):
+                                def __init__(self, name, model_type, api_endpoint):
+                                    # 创建一个具有get方法的配置类
+                                    class SimpleConfig:
+                                        def __init__(self):
+                                            self._dict = {}
+                                        
+                                        def __setattr__(self, name, value):
+                                            if name == '_dict':
+                                                super().__setattr__(name, value)
+                                            else:
+                                                self._dict[name] = value
+                                                super().__setattr__(name, value)
+                                        
+                                        def get(self, key, default=None):
+                                            return self._dict.get(key, default)
+                                    
+                                    config = SimpleConfig()
+                                    config.model_type = model_type
+                                    config.api_endpoint = api_endpoint
+                                    config.supported_sequences = []  # 添加默认支持的序列类型
+                                    config.supported_tasks = []  # 添加默认支持的任务类型
+                                    
+                                    super().__init__(model_name=name, config=config)
+                                    self.model_name = name
+                                    self.model_type = model_type
+                                    self.api_endpoint = api_endpoint
+                                    self.use_docker = True
+                                    self.status = ModelStatus.LOADED
+                                    # 修复：移除对不存在的container_clients属性的依赖
+                                    # 直接设置客户端为None，让predict方法处理
+                                    self.client = None
+                                
+                                def load_model(self, device=None):
+                                    return True
+                                
+                                def unload_model(self):
+                                    return True
+                                
+                                def is_loaded(self):
+                                    return True
+                                
+                                def predict(self, sequences, task_type, **kwargs):
+                                    if not self.client:
+                                        return {"error": "容器客户端未初始化"}
+                                    return self.client.predict(sequences, task_type, **kwargs)
+                                
+                                def get_memory_usage(self):
+                                    return 0
+                                
+                                def get_model_info(self):
+                                    return {"model_name": self.model_name, "model_type": self.model_type.value, "use_docker": True}
+                            
+                            # 创建模型实例并注册到models字典
+                            model_instance = ContainerModel(container_name, model_type, container_info.api_endpoint)
+                            self.models[container_name] = model_instance
+                            self.logger.info(f"已将容器模型 {container_name} 注册到models字典")
                         else:
                             self.logger.warning(f"无法识别容器 {container_name} 的模型类型")
                     else:
@@ -322,6 +414,16 @@ class ModelManager:
             self.logger.warning("内存不足，尝试卸载其他模型", model_name=model_name)
             self._unload_least_used_model()
             
+        # 优化设备选择，优先使用GPUScheduler分配的GPU
+        try:
+            if device == DeviceType.AUTO and hasattr(self, 'gpu_scheduler'):
+                available_device = self.gpu_scheduler.get_available_device()
+                if available_device:
+                    device = available_device
+                    self.logger.info(f"通过GPUScheduler为模型 {model_name} 分配设备: {device}")
+        except Exception as e:
+            self.logger.warning(f"无法使用GPUScheduler分配设备: {str(e)}")
+        
         # 加载模型
         try:
             with monitor_context(model_name=model_name):
@@ -335,6 +437,21 @@ class ModelManager:
                     
                     # 记录加载后的资源使用情况
                     self._log_resource_usage(model_name)
+                    
+                    # 使用GPUScheduler跟踪模型与GPU的关联
+                    try:
+                        # 尝试获取模型的实际设备
+                        if hasattr(model, 'device'):
+                            model_device = model.device
+                            if model_device and isinstance(model_device, str) and model_device.startswith("cuda"):
+                                self.gpu_scheduler.track_model_gpu_usage(model_name, model_device)
+                                self.logger.info(f"已跟踪模型 {model_name} 与设备 {model_device} 的关联")
+                    except Exception as e:
+                        self.logger.warning(f"无法跟踪模型-GPU关联: {str(e)}")
+                    
+                    # 跟踪模型使用的GPU
+                    if hasattr(model, 'device') and model.device and str(model.device).startswith('cuda:'):
+                        self.gpu_scheduler.track_model_gpu_usage(model_name, str(model.device))
                 return success
         except Exception as e:
             self.logger.error("模型加载失败", model_name=model_name, error=str(e))
@@ -362,6 +479,9 @@ class ModelManager:
             with monitor_context(model_name=model_name):
                 success = model.unload_model()
                 if success:
+                    # 取消跟踪模型使用的GPU
+                    self.gpu_scheduler.untrack_model_gpu_usage(model_name)
+                    
                     del self.loaded_models[model_name]
                     self.logger.info("模型卸载成功", model_name=model_name)
                     
@@ -967,6 +1087,39 @@ class ModelManager:
             "processing_time": processing_time
         }
     
+    def _predict_with_container_model(
+        self,
+        model_name: str,
+        sequences: List[str],
+        task_type: Union[str, TaskType],
+        sequence_type: Optional[SequenceType] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        使用容器模型进行预测
+        
+        Args:
+            model_name: 模型名称
+            sequences: 输入序列列表
+            task_type: 任务类型
+            sequence_type: 序列类型
+            **kwargs: 其他参数
+            
+        Returns:
+            Dict[str, Any]: 预测结果
+        """
+        # 转换任务类型
+        if isinstance(task_type, TaskType):
+            task_type_str = task_type.value
+        else:
+            task_type_str = task_type
+            
+        # 调用批量预测方法
+        return self._predict_batch_with_container_model(
+            model_name, sequences, task_type_str, 
+            sequence_type.value if sequence_type else None, **kwargs
+        )
+    
     def _predict_batch_with_container_model(
         self,
         model_name: str,
@@ -1011,7 +1164,33 @@ class ModelManager:
             # 执行批量预测
             if model_type == ModelType.DNABERT2:
                 if isinstance(client, DNABERT2Client):
-                    if task_type == "classification":
+                    if task_type == "embedding":
+                        # 处理嵌入任务
+                        results = []
+                        for sequence in sequences:
+                            result = client.get_embedding(sequence, kwargs.get("embedding_dimension", 768))
+                            results.append(result)
+                        
+                        # 转换结果格式为API期望的格式
+                        formatted_results = []
+                        for i, result in enumerate(results):
+                            seq = sequences[i]  # 使用对应的序列
+                            formatted_results.append({
+                                "sequence": seq,
+                                "sequence_length": len(seq),
+                                "embedding": result.prediction  # 使用prediction字段中的嵌入向量
+                            })
+                        
+                        return {
+                            "success": True,
+                            "results": formatted_results,
+                            "model_name": model_name,
+                            "model_type": model_type.value,
+                            "batch_size": len(sequences),
+                            "processing_time": time.time() - start_time,
+                            "container_model": True
+                        }
+                    elif task_type == "classification":
                         result = client.classify_batch(sequences, kwargs)
                     elif task_type == "extraction":
                         result = client.extract_batch_features(sequences, kwargs)
@@ -1587,7 +1766,74 @@ class GPUScheduler:
     def __init__(self):
         self.logger = get_logger(__name__)
         self.device_usage = {}  # 记录每个GPU设备的使用情况
+        self.model_to_gpu_map = {}  # 记录模型与GPU的关联关系
+        self.gpu_to_models_map = {}  # 记录每个GPU上运行的模型
         
+    def track_model_gpu_usage(self, model_name: str, device: str) -> None:
+        """
+        跟踪模型与GPU的使用关系
+        
+        Args:
+            model_name: 模型名称
+            device: GPU设备，如"cuda:0"
+        """
+        if device.startswith("cuda:"):
+            # 记录模型使用的GPU
+            self.model_to_gpu_map[model_name] = device
+            
+            # 记录GPU上运行的模型
+            if device not in self.gpu_to_models_map:
+                self.gpu_to_models_map[device] = set()
+            self.gpu_to_models_map[device].add(model_name)
+            
+            self.logger.info(f"模型 {model_name} 正在使用设备 {device}")
+    
+    def untrack_model_gpu_usage(self, model_name: str) -> None:
+        """
+        取消跟踪模型与GPU的使用关系
+        
+        Args:
+            model_name: 模型名称
+        """
+        if model_name in self.model_to_gpu_map:
+            device = self.model_to_gpu_map[model_name]
+            
+            # 从GPU到模型的映射中移除
+            if device in self.gpu_to_models_map and model_name in self.gpu_to_models_map[device]:
+                self.gpu_to_models_map[device].remove(model_name)
+                # 如果GPU上没有模型了，清理映射
+                if not self.gpu_to_models_map[device]:
+                    del self.gpu_to_models_map[device]
+            
+            # 移除模型到GPU的映射
+            del self.model_to_gpu_map[model_name]
+            
+            self.logger.info(f"取消跟踪模型 {model_name} 的GPU使用")
+    
+    def get_model_gpu_info(self, model_name: str) -> Optional[str]:
+        """
+        获取模型使用的GPU信息
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            Optional[str]: GPU设备名称，如果模型未使用GPU则返回None
+        """
+        return self.model_to_gpu_map.get(model_name)
+    
+    def get_gpu_models_info(self, device: str) -> List[str]:
+        """
+        获取在指定GPU上运行的所有模型
+        
+        Args:
+            device: GPU设备名称，如"cuda:0"
+            
+        Returns:
+            List[str]: 在该GPU上运行的模型名称列表
+        """
+        return list(self.gpu_to_models_map.get(device, set()))
+    
     @monitor_performance(model_name="gpu_scheduler")
     def get_available_device(self) -> Optional[str]:
         """

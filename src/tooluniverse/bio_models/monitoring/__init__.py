@@ -64,39 +64,78 @@ class PerformanceMonitor:
     """性能监控类，提供各种性能指标的收集和记录功能"""
     
     def __init__(self, enable_gpu_monitoring: bool = True):
-        self.enable_gpu_monitoring = enable_gpu_monitoring and PYNVML_AVAILABLE
+        self.enable_gpu_monitoring = enable_gpu_monitoring
         self.gpu_count = 0
+        self.pynvml_initialized = False
         
-        # 初始化GPU监控
-        if self.enable_gpu_monitoring:
+        # 优先使用PyTorch的GPU检测
+        if TORCH_AVAILABLE and torch.cuda.is_available():
+            self.gpu_count = torch.cuda.device_count()
+            print(f"PyTorch detected {self.gpu_count} GPUs")
+        # 如果PyTorch不可用或没有检测到GPU，尝试使用pynvml
+        elif self.enable_gpu_monitoring and PYNVML_AVAILABLE:
             try:
                 pynvml.nvmlInit()
+                self.pynvml_initialized = True
                 self.gpu_count = pynvml.nvmlDeviceGetCount()
+                print(f"pynvml detected {self.gpu_count} GPUs")
             except Exception as e:
                 print(f"Failed to initialize NVIDIA ML: {e}")
                 self.enable_gpu_monitoring = False
+                self.pynvml_initialized = False
     
     def get_gpu_memory_info(self, gpu_id: int = 0) -> Dict[str, float]:
         """获取GPU内存使用情况"""
-        if not self.enable_gpu_monitoring or gpu_id >= self.gpu_count:
+        # 基本检查
+        if not self.enable_gpu_monitoring or gpu_id < 0:
             return {"allocated": 0, "reserved": 0, "total": 0}
         
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            
-            # 更新Prometheus指标
-            GPU_MEMORY_USAGE.labels(gpu_id=str(gpu_id)).set(mem_info.used)
-            
-            return {
-                "allocated": mem_info.used,
-                "reserved": mem_info.used,
-                "total": mem_info.total,
-                "free": mem_info.free
-            }
-        except Exception as e:
-            print(f"Error getting GPU memory info: {e}")
-            return {"allocated": 0, "reserved": 0, "total": 0}
+        # 首先尝试使用PyTorch获取GPU信息
+        if TORCH_AVAILABLE and torch.cuda.is_available() and gpu_id < torch.cuda.device_count():
+            try:
+                # 设置当前设备以确保正确初始化
+                torch.cuda.set_device(gpu_id)
+                device_properties = torch.cuda.get_device_properties(gpu_id)
+                allocated = torch.cuda.memory_allocated(gpu_id)
+                
+                # 安全地更新Prometheus指标
+                try:
+                    from prometheus_client import Gauge
+                    from prometheus_client import REGISTRY
+                    metric_name = 'bio_gpu_memory_usage_bytes'
+                    if metric_name in REGISTRY._names_to_collectors:
+                        gpu_metric = REGISTRY._names_to_collectors[metric_name]
+                        gpu_metric.labels(gpu_id=str(gpu_id)).set(allocated)
+                except Exception as metric_error:
+                    print(f"Warning: Failed to update GPU metric: {metric_error}")
+                
+                return {
+                    "allocated": allocated,
+                    "reserved": torch.cuda.memory_reserved(gpu_id),
+                    "total": device_properties.total_memory,
+                    "free": device_properties.total_memory - allocated
+                }
+            except Exception as torch_error:
+                print(f"Error getting PyTorch GPU memory info: {torch_error}")
+        
+        # 如果PyTorch方法失败且pynvml已初始化，尝试使用pynvml
+        if self.pynvml_initialized and PYNVML_AVAILABLE:
+            try:
+                # 确保GPU ID有效
+                if gpu_id < pynvml.nvmlDeviceGetCount():
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    return {
+                        "allocated": mem_info.used,
+                        "reserved": mem_info.used,
+                        "total": mem_info.total,
+                        "free": mem_info.free
+                    }
+            except Exception as e:
+                print(f"Error getting GPU memory info: {e}")
+        
+        # 默认返回
+        return {"allocated": 0, "reserved": 0, "total": 0}
     
     def get_torch_gpu_memory_info(self) -> Dict[str, float]:
         """获取PyTorch GPU内存使用情况"""
@@ -156,16 +195,37 @@ class PerformanceMonitor:
             memory_percent=cpu_memory["percent"]
         )
         
-        # GPU内存
+        # GPU内存 - 添加模型关联功能
         if self.enable_gpu_monitoring:
+            # 尝试导入GPUScheduler以获取模型-GPU关联信息
+            try:
+                from ..model_manager import GPUScheduler
+                # 检查是否有全局的GPUScheduler实例
+                import __main__
+                if hasattr(__main__, 'gpu_scheduler'):
+                    gpu_scheduler = __main__.gpu_scheduler
+                else:
+                    # 创建临时实例以获取所有GPU信息
+                    gpu_scheduler = None
+            except Exception:
+                gpu_scheduler = None
+                
             for gpu_id in range(self.gpu_count):
                 gpu_memory = self.get_gpu_memory_info(gpu_id)
+                device_name = f"cuda:{gpu_id}"
+                
+                # 尝试获取在该GPU上运行的模型
+                models_on_gpu = []
+                if gpu_scheduler and hasattr(gpu_scheduler, 'get_gpu_models_info'):
+                    models_on_gpu = gpu_scheduler.get_gpu_models_info(device_name)
+                
                 logger.info(
                     "gpu_resources",
                     gpu_id=gpu_id,
                     memory_allocated=gpu_memory["allocated"],
                     memory_total=gpu_memory["total"],
-                    memory_percent=(gpu_memory["allocated"] / gpu_memory["total"]) * 100 if gpu_memory["total"] > 0 else 0
+                    memory_percent=(gpu_memory["allocated"] / gpu_memory["total"]) * 100 if gpu_memory["total"] > 0 else 0,
+                    models=models_on_gpu  # 添加在该GPU上运行的模型列表
                 )
         
         # PyTorch GPU内存
@@ -242,15 +302,51 @@ def _get_tensor_info(data: Any) -> Dict[str, Any]:
     result = {"shapes": [], "types": []}
     
     def _extract_info(obj, path=""):
-        if hasattr(obj, "shape"):  # numpy数组, torch张量等
+        # 处理None值
+        if obj is None:
+            result["shapes"].append(f"{path}: None")
+            result["types"].append(f"{path}: NoneType")
+        # 处理有shape属性的对象（numpy数组, torch张量等）
+        elif hasattr(obj, "shape"):
             result["shapes"].append(f"{path}: {obj.shape}")
             result["types"].append(f"{path}: {type(obj).__name__}")
+        # 处理列表和元组，记录长度信息
         elif isinstance(obj, (list, tuple)):
-            for i, item in enumerate(obj):
+            result["shapes"].append(f"{path}: [{len(obj)} items]")
+            result["types"].append(f"{path}: {type(obj).__name__}")
+            # 递归处理前3个元素以避免日志过大
+            for i, item in enumerate(obj[:3]):
                 _extract_info(item, f"{path}[{i}]" if path else f"[{i}]")
+            # 如果列表/元组长度大于3，标记还有更多元素
+            if len(obj) > 3:
+                result["shapes"].append(f"{path}: ... (and {len(obj) - 3} more items)")
+        # 处理字典，记录键值对数量
         elif isinstance(obj, dict):
-            for key, value in obj.items():
+            result["shapes"].append(f"{path}: {len(obj)} key-value pairs")
+            result["types"].append(f"{path}: {type(obj).__name__}")
+            # 递归处理前3个键值对
+            for i, (key, value) in enumerate(list(obj.items())[:3]):
                 _extract_info(value, f"{path}.{key}" if path else key)
+            # 如果字典长度大于3，标记还有更多元素
+            if len(obj) > 3:
+                result["shapes"].append(f"{path}: ... (and {len(obj) - 3} more keys)")
+        # 处理字符串
+        elif isinstance(obj, str):
+            result["shapes"].append(f"{path}: str[{len(obj)}]")
+            result["types"].append(f"{path}: str")
+        # 处理数字
+        elif isinstance(obj, (int, float)):
+            result["shapes"].append(f"{path}: scalar")
+            result["types"].append(f"{path}: {type(obj).__name__}")
+        # 处理其他类型
+        else:
+            try:
+                # 尝试获取长度（对于支持__len__的对象）
+                length = len(obj)
+                result["shapes"].append(f"{path}: length={length}")
+            except:
+                result["shapes"].append(f"{path}: unknown")
+            result["types"].append(f"{path}: {type(obj).__name__}")
     
     _extract_info(data)
     return result
@@ -296,14 +392,26 @@ def monitor_performance(model_name: str = None, task_type: str = None):
                 # 记录结束时的资源使用情况
                 performance_monitor.log_system_resources(logger.bind(event="end"))
                 
-                # 更新Prometheus指标
-                if model_name:
-                    if task_type:
-                        INFERENCE_TIME.labels(model_name=model_name, task_type=task_type).observe(execution_time)
-                        INFERENCE_COUNTER.labels(model_name=model_name, task_type=task_type, status=status).inc()
-                    else:
-                        MODEL_LOAD_TIME.labels(model_name=model_name).observe(execution_time)
-                        MODEL_LOAD_COUNTER.labels(model_name=model_name, status=status).inc()
+                # 使用MetricsCollector记录指标，避免Prometheus指标问题
+                try:
+                    # 确保metrics_collector已正确初始化
+                    collector_instance = get_metrics_collector_instance()
+                    if model_name and collector_instance:
+                        if task_type:
+                            # 记录推理指标
+                            collector_instance.add_metric('inference_time', execution_time, {'model_name': model_name, 'task_type': task_type})
+                            collector_instance.add_metric('inference_count', 1, {'model_name': model_name, 'task_type': task_type, 'status': status})
+                        else:
+                            # 记录模型加载指标 - 这解决了无法记录模型加载时间的问题
+                            collector_instance.add_model_metric(model_name, 'load_time', execution_time)
+                            collector_instance.add_metric('model_load_time', execution_time, {'model_name': model_name, 'status': status})
+                            # 同时记录到日志中以便排查
+                            logger.info(f"Model load time recorded: {execution_time:.4f}s for {model_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to update metrics with MetricsCollector: {e}")
+                    # 即使指标收集失败，也要确保模型加载时间被记录到日志中
+                    if not task_type and model_name:
+                        logger.info(f"Fallback: Model load time was {execution_time:.4f}s for {model_name}")
                 
                 # 记录执行时间
                 logger.info(
@@ -348,14 +456,26 @@ def monitor_context(model_name: str = None, task_type: str = None):
         # 记录结束时的资源使用情况
         performance_monitor.log_system_resources(logger.bind(event="end"))
         
-        # 更新Prometheus指标
-        if model_name:
-            if task_type:
-                INFERENCE_TIME.labels(model_name=model_name, task_type=task_type).observe(execution_time)
-                INFERENCE_COUNTER.labels(model_name=model_name, task_type=task_type, status=status).inc()
-            else:
-                MODEL_LOAD_TIME.labels(model_name=model_name).observe(execution_time)
-                MODEL_LOAD_COUNTER.labels(model_name=model_name, status=status).inc()
+        # 使用MetricsCollector记录指标，避免Prometheus指标问题
+        try:
+            # 确保metrics_collector已正确初始化
+            collector_instance = get_metrics_collector_instance()
+            if model_name and collector_instance:
+                if task_type:
+                    # 记录推理指标
+                    collector_instance.add_metric('inference_time', execution_time, {'model_name': model_name, 'task_type': task_type})
+                    collector_instance.add_metric('inference_count', 1, {'model_name': model_name, 'task_type': task_type, 'status': status})
+                else:
+                    # 记录模型加载指标 - 这解决了无法记录模型加载时间的问题
+                    collector_instance.add_model_metric(model_name, 'load_time', execution_time)
+                    collector_instance.add_metric('model_load_time', execution_time, {'model_name': model_name, 'status': status})
+                    # 同时记录到日志中以便排查
+                    logger.info(f"Model load time recorded: {execution_time:.4f}s for {model_name}")
+        except Exception as e:
+            logger.warning(f"Failed to update metrics with MetricsCollector: {e}")
+            # 即使指标收集失败，也要确保模型加载时间被记录到日志中
+            if not task_type and model_name:
+                logger.info(f"Fallback: Model load time was {execution_time:.4f}s for {model_name}")
         
         # 记录执行时间
         logger.info(

@@ -24,6 +24,7 @@ docker/
 ├── docker-compose.yml # Docker Compose配置
 ├── prometheus.yml     # Prometheus监控配置
 ├── start_bio_models.sh # 生物序列模型启动脚本
+├── .env.example       # 环境变量示例文件
 └── README.md          # 本文件
 ```
 
@@ -86,6 +87,62 @@ docker-compose logs -f
 # 停止所有服务
 docker-compose down
 ```
+
+### 环境变量配置
+
+为了避免硬编码路径，我们使用环境变量来配置模型路径和其他参数。您可以通过以下方式配置环境变量：
+
+#### 方法一：使用.env文件（推荐）
+
+1. 复制示例环境变量文件：
+```bash
+cp .env.example .env
+```
+
+2. 编辑.env文件，根据您的实际情况修改路径：
+```bash
+# DNABERT2模型路径
+DNABERT2_MODEL_PATH=/path/to/your/DNABERT_2
+
+# LucaOne模型路径
+LUCAONE_THIRDPARTY_PATH=/path/to/your/LucaOne
+
+# DNABERT2配置
+MAX_SEQUENCE_LENGTH=1024
+DEVICE=cuda
+
+# 日志目录
+LOG_DIR=/app/logs
+```
+
+3. 启动服务：
+```bash
+docker-compose up -d
+```
+
+#### 方法二：直接设置环境变量
+
+```bash
+# 设置环境变量
+export DNABERT2_MODEL_PATH=/path/to/your/DNABERT_2
+export LUCAONE_THIRDPARTY_PATH=/path/to/your/LucaOne
+export MAX_SEQUENCE_LENGTH=1024
+export DEVICE=cuda
+export LOG_DIR=/app/logs
+
+# 启动服务
+docker-compose up -d
+```
+
+#### 环境变量说明
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| DNABERT2_MODEL_PATH | /data/models/DNABERT_2 | DNABERT2模型文件路径 |
+| LUCAONE_THIRDPARTY_PATH | /data/models/LucaOne | LucaOne模型文件路径 |
+| MAX_SEQUENCE_LENGTH | 1024 | DNABERT2最大序列长度 |
+| DEVICE | cuda | 使用的设备类型（cuda/cpu） |
+| LOG_DIR | /app/logs | 日志文件存储目录 |
 
 ### 使用启动脚本部署生物序列模型
 

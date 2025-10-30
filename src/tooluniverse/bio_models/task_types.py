@@ -8,6 +8,8 @@ class TaskType(Enum):
     """生物序列分析任务类型"""
     EMBEDDING = "embedding"                    # 序列嵌入
     CLASSIFICATION = "classification"          # 分类任务
+    PREDICTION = "prediction"                  # 预测任务
+    FINE_TUNING = "fine_tuning"                # 微调任务
     STRUCTURE_PREDICTION = "structure_prediction"  # 结构预测
     MOTIF_DETECTION = "motif_detection"        # 基序检测
     MUTATION_ANALYSIS = "mutation_analysis"    # 突变分析

@@ -162,9 +162,9 @@ class CodonBERTModel:
                         dna_seq += random.choice(['ATG', 'TGG'])  # 使用M或W的密码子
                 
                 # 计算优化指标
-                cai = np.random.rand().astype(np.float32)  # 密码子适应指数
-                gc_content = np.random.rand().astype(np.float32) * 100  # GC含量
-                expression_score = np.random.rand().astype(np.float32)  # 表达水平预测
+                cai = np.float32(np.random.rand())  # 密码子适应指数
+                gc_content = np.float32(np.random.rand()) * 100  # GC含量
+                expression_score = np.float32(np.random.rand())  # 表达水平预测
                 
                 result = {
                     "protein_sequence": protein_seq[:50] + "..." if len(protein_seq) > 50 else protein_seq,
@@ -214,8 +214,8 @@ class CodonBERTModel:
             
             for dna_seq in dna_sequences:
                 # 模拟基因表达水平预测
-                expression_level = np.random.rand().astype(np.float32) * 10  # 0-10之间的值
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                expression_level = np.float32(np.random.rand()) * 10  # 0-10之间的值
+                confidence = np.float32(np.random.rand())  # 0-1之间的置信度
                 
                 # 计算GC含量
                 gc_count = dna_seq.count('G') + dna_seq.count('C')

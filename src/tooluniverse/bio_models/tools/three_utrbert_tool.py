@@ -122,8 +122,8 @@ class ThreeUTRBERTModel:
             
             for seq in sequences:
                 # 模拟翻译效率预测
-                translation_efficiency = np.random.rand().astype(np.float32)  # 0-1之间的值
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                translation_efficiency = np.float32(np.random.rand())  # 0-1之间的值
+                confidence = np.float32(np.random.rand())  # 0-1之间的置信度
                 
                 result = {
                     "sequence": seq[:50] + "..." if len(seq) > 50 else seq,
@@ -167,8 +167,8 @@ class ThreeUTRBERTModel:
             
             for seq in sequences:
                 # 模拟基因表达水平预测
-                expression_level = np.random.rand().astype(np.float32) * 10  # 0-10之间的值
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                expression_level = np.float32(np.random.rand()) * 10  # 0-10之间的值
+                confidence = np.float32(np.random.rand())  # 0-1之间的置信度
                 
                 result = {
                     "sequence": seq[:50] + "..." if len(seq) > 50 else seq,

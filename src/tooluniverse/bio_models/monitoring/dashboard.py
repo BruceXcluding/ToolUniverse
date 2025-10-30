@@ -94,6 +94,16 @@ class MetricsCollector:
             return []
         
         return self.model_metrics[model_name][metric_type][-count:] if self.model_metrics[model_name][metric_type] else []
+    
+    def record_model_success(self, model_name: str, device: str) -> None:
+        """记录模型加载成功"""
+        self.add_metric("model_load_success", 1, {"model_name": model_name, "device": device})
+        self.logger.info(f"模型 {model_name} 加载成功，设备: {device}")
+    
+    def record_model_failure(self, model_name: str, error_message: str) -> None:
+        """记录模型加载失败"""
+        self.add_metric("model_load_failure", 1, {"model_name": model_name, "error": error_message})
+        self.logger.error(f"模型 {model_name} 加载失败: {error_message}")
 
 
 # 全局指标收集器 - 延迟初始化以避免循环导入
@@ -144,15 +154,26 @@ def create_dashboard() -> None:
 
 
 def display_system_resources() -> None:
-    """显示系统资源使用情况"""
+    """
+    显示系统资源使用情况
+    """
     st.header("系统资源使用情况")
     
     # 延迟导入以避免循环导入
     from . import performance_monitor
+    from ..model_manager import ModelManager
     
     # 获取系统资源信息
     cpu_memory = performance_monitor.get_cpu_memory_info()
     cpu_usage = performance_monitor.get_cpu_usage()
+    
+    # 创建模型管理器实例以获取模型信息
+    try:
+        model_manager = ModelManager()
+        loaded_models = model_manager.list_loaded_models()
+        model_names = [model['name'] for model in loaded_models if model['type'] != 'container']
+    except Exception:
+        model_names = []
     
     # CPU和内存信息
     col1, col2 = st.columns(2)
@@ -219,16 +240,76 @@ def display_system_resources() -> None:
     # GPU信息
     if performance_monitor.enable_gpu_monitoring:
         st.subheader("GPU使用情况")
-        gpu_cols = st.columns(min(performance_monitor.gpu_count, 4))
         
-        for gpu_id in range(performance_monitor.gpu_count):
-            with gpu_cols[gpu_id % 4]:
+        # 添加模型筛选选项
+        model_filter = st.selectbox(
+            "选择模型筛选（空表示显示所有模型使用的GPU）", 
+            options=[""] + model_names,
+            format_func=lambda x: "全部模型" if x == "" else x
+        )
+        
+        # 获取需要显示的GPU ID列表
+        gpu_ids_to_display = set()
+        
+        if model_filter:
+            # 如果选择了特定模型，尝试获取该模型使用的GPU
+            try:
+                # 获取模型使用的GPU信息
+                model_gpu_info = model_manager.gpu_scheduler.get_model_gpu_info(model_filter)
+                if model_gpu_info:
+                    # 从cuda设备字符串中提取GPU ID
+                    gpu_id = int(model_gpu_info.split(':')[-1])
+                    gpu_ids_to_display.add(gpu_id)
+                else:
+                    st.info(f"模型 {model_filter} 未使用GPU或未加载")
+            except Exception as e:
+                st.warning(f"获取模型GPU信息失败: {e}")
+                # 如果获取失败，显示所有活跃GPU作为备选
+                for gpu_id in range(performance_monitor.gpu_count):
+                    gpu_memory = performance_monitor.get_gpu_memory_info(gpu_id)
+                    if gpu_memory["allocated"] > 0:
+                        gpu_ids_to_display.add(gpu_id)
+        else:
+            # 默认显示所有有显存使用的GPU
+            for gpu_id in range(performance_monitor.gpu_count):
                 gpu_memory = performance_monitor.get_gpu_memory_info(gpu_id)
-                memory_percent = (gpu_memory["allocated"] / gpu_memory["total"]) * 100 if gpu_memory["total"] > 0 else 0
-                
-                st.metric(f"GPU {gpu_id}", f"{memory_percent:.2f}%")
-                st.metric("已用显存", f"{gpu_memory['allocated'] / (1024**3):.2f} GB")
-                st.metric("总显存", f"{gpu_memory['total'] / (1024**3):.2f} GB")
+                if gpu_memory["allocated"] > 0:
+                    gpu_ids_to_display.add(gpu_id)
+        
+        # 显示选中的GPU信息
+        active_gpus = []
+        for gpu_id in sorted(gpu_ids_to_display):
+            gpu_memory = performance_monitor.get_gpu_memory_info(gpu_id)
+            active_gpus.append((gpu_id, gpu_memory))
+        
+        if not active_gpus:
+            st.info("当前没有GPU正在使用")
+        else:
+            # 显示GPU信息，并标注使用该GPU的模型
+            gpu_cols = st.columns(min(len(active_gpus), 4))
+            for idx, (gpu_id, gpu_memory) in enumerate(active_gpus):
+                with gpu_cols[idx % 4]:
+                    memory_percent = (gpu_memory["allocated"] / gpu_memory["total"]) * 100 if gpu_memory["total"] > 0 else 0
+                    
+                    # 尝试获取使用该GPU的模型
+                    using_models = []
+                    try:
+                        models_on_gpu = model_manager.gpu_scheduler.get_gpu_models_info(f"cuda:{gpu_id}")
+                        if models_on_gpu:
+                            using_models = models_on_gpu
+                    except Exception:
+                        pass
+                    
+                    # 显示GPU信息
+                    st.metric(f"GPU {gpu_id}", f"{memory_percent:.2f}%")
+                    st.metric("已用显存", f"{gpu_memory['allocated'] / (1024**3):.2f} GB")
+                    st.metric("总显存", f"{gpu_memory['total'] / (1024**3):.2f} GB")
+                    
+                    # 显示使用该GPU的模型
+                    if using_models:
+                        st.text("使用中的模型:")
+                        for model in using_models:
+                            st.text(f"  - {model}")
         
         # PyTorch GPU内存
         torch_memory = performance_monitor.get_torch_gpu_memory_info()

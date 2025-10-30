@@ -149,8 +149,8 @@ class UTRLMModel:
                 
                 for utr_seq in utr_sequences:
                     # 模拟翻译效率预测
-                    translation_efficiency = np.random.rand().astype(np.float32) * 10  # 0-10之间的值
-                    confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                    translation_efficiency = np.float32(np.random.rand()) * 10  # 0-10之间的值
+                    confidence = np.float32(np.random.rand())  # 0-1之间的置信度
                     
                     # 计算GC含量
                     gc_count = utr_seq.count('G') + utr_seq.count('C')
@@ -229,8 +229,8 @@ class UTRLMModel:
             
             for utr_seq in utr_sequences:
                 # 模拟mRNA稳定性预测
-                mrna_stability = np.random.rand().astype(np.float32) * 24  # 0-24小时
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                mrna_stability = np.float32(np.random.rand()) * 24  # 0-24小时
+                confidence = np.float32(np.random.rand())  # 0-1之间的置信度
                 
                 # 计算GC含量
                 gc_count = utr_seq.count('G') + utr_seq.count('C')
@@ -285,8 +285,8 @@ class UTRLMModel:
             
             for utr_seq in utr_sequences:
                 # 模拟表达水平预测
-                expression_level = np.random.rand().astype(np.float32) * 100  # 0-100之间的值
-                confidence = np.random.rand().astype(np.float32)  # 0-1之间的置信度
+                expression_level = np.float32(np.random.rand()) * 100  # 0-100之间的值
+                confidence = np.float32(np.random.rand())  # 0-1之间的置信度
                 
                 # 计算GC含量
                 gc_count = utr_seq.count('G') + utr_seq.count('C')
