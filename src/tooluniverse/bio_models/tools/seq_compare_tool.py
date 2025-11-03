@@ -2,14 +2,31 @@
 import os
 import logging
 from typing import Dict, List, Any, Optional, Union
+import numpy as np
+from Bio import pairwise2
+from Bio.Seq import Seq
+from Bio.SeqUtils import gc_fraction
+from ...base_tool import BaseTool
+from ...exceptions import (
+    ToolError, 
+    ToolConfigError, 
+    ToolValidationError, 
+    ToolUnavailableError,
+    ToolServerError
+)
 from ..task_types import TaskType, SequenceType, DeviceType
 
-# 直接实现序列比较功能，不需要额外导入
-SEQ_COMPARE_AVAILABLE = True
+# 检查Biopython是否可用
+try:
+    import Bio
+    SEQ_COMPARE_AVAILABLE = True
+except ImportError:
+    SEQ_COMPARE_AVAILABLE = False
+    logging.warning("无法导入Biopython库，请确保Biopython已安装")
 
 
-class SeqCompareTool:
-    """序列比较工具 - 用于计算两条序列的相似度"""
+class SeqCompareTool(BaseTool):
+    """序列比较工具 - 用于序列相似度比较"""
     
     def __init__(self, config_path: Optional[str] = None):
         """
@@ -18,10 +35,81 @@ class SeqCompareTool:
         Args:
             config_path: 配置文件路径（可选）
         """
+        # 初始化BaseTool
+        super().__init__({
+            "name": "seq_compare",
+            "description": "序列相似度比较工具",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sequences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要比较的序列列表（必须为2条序列）"
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "任务类型",
+                        "default": "sequence_similarity"
+                    },
+                    "algorithm": {
+                        "type": "string",
+                        "description": "比对算法 (global, local, semi-global)",
+                        "default": "global"
+                    },
+                    "match_score": {
+                        "type": "integer",
+                        "description": "匹配得分",
+                        "default": 2
+                    },
+                    "mismatch_penalty": {
+                        "type": "integer",
+                        "description": "错配罚分",
+                        "default": -1
+                    },
+                    "gap_open_penalty": {
+                        "type": "integer",
+                        "description": "空位开放罚分",
+                        "default": -2
+                    },
+                    "gap_extend_penalty": {
+                        "type": "integer",
+                        "description": "空位扩展罚分",
+                        "default": -0.5
+                    }
+                },
+                "required": ["sequences"]
+            }
+        })
+        
         # 直接初始化必要的组件
         self.logger = logging.getLogger(__name__)
-        self.tool_name = "seq_compare"
-        self.logger.info("序列比较工具初始化完成")
+        
+        # 缓存实例字典，根据参数组合缓存配置
+        self.compare_configs = {}
+    
+    def handle_error(self, exception: Exception) -> ToolError:
+        """
+        处理工具执行过程中的错误
+        
+        Args:
+            exception: 异常对象
+            
+        Returns:
+            ToolError: 结构化的工具错误
+        """
+        error_str = str(exception).lower()
+        
+        if any(keyword in error_str for keyword in ["import", "module", "library", "biopython", "bio"]):
+            return ToolConfigError(f"序列比较库配置错误: {exception}")
+        elif any(keyword in error_str for keyword in ["sequence", "序列", "invalid", "无效"]):
+            return ToolValidationError(f"序列验证错误: {exception}")
+        elif any(keyword in error_str for keyword in ["compare", "比较", "similarity", "相似度"]):
+            return ToolServerError(f"序列比较错误: {exception}")
+        elif any(keyword in error_str for keyword in ["alignment", "比对", "score", "得分"]):
+            return ToolServerError(f"序列比对错误: {exception}")
+        else:
+            return ToolServerError(f"序列比较工具错误: {exception}")
     
     def analyze(
         self,
@@ -198,6 +286,24 @@ class SeqCompareTool:
     def is_available(self) -> bool:
         """检查工具是否可用"""
         return SEQ_COMPARE_AVAILABLE
+    
+    def run(self, arguments=None, stream_callback=None, use_cache=False, validate=True):
+        """Execute the sequence comparison tool."""
+        if arguments is None:
+            arguments = {}
+        
+        # Extract required parameters
+        seq1 = arguments.get("seq1", "")
+        seq2 = arguments.get("seq2", "")
+        
+        # Validate parameters
+        if not seq1 or not seq2:
+            return {"error": "Both seq1 and seq2 must be provided"}
+        
+        # Perform the sequence comparison
+        result = self.compare_single_pair(seq1, seq2)
+        
+        return result
 
 
 # 如果作为主程序运行，提供简单的测试

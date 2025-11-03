@@ -146,14 +146,27 @@ ToolUniverse 提供了多个命令行工具，用于调用各种生物信息学�
 
 DNABERT2 是一个用于 DNA 序列分析的预训练语言模型，支持嵌入向量生成和序列分类任务。
 
-#### 📝 基本用法
+#### 📝 基本用法（直接实例调用）
 
 ```bash
 # 📁 进入生物信息学工具示例目录
 cd /mnt/models/yigex/ToolUniverse/examples/bio_models
 
 # 🔬 使用虚拟环境中的 Python 运行工具
-../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding
+```
+
+#### 📡 基本用法（通过MCP调用）
+
+```bash
+# 📁 进入生物信息学工具示例目录
+cd /mnt/models/yigex/ToolUniverse/examples/bio_models
+
+# 🔮 通过MCP服务调用工具
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口调用工具
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --use-mcp
 ```
 
 #### ⚙️ 可用参数
@@ -167,19 +180,33 @@ cd /mnt/models/yigex/ToolUniverse/examples/bio_models
 | `--json` | 以 JSON 格式输出结果 |
 | `--output` | 输出文件路径 |
 | `--use-docker` | 是否使用 Docker 模式（默认为 True） |
+| `--use-mcp` | 是否通过 MCP 服务调用工具（默认为 False） |
+| `--mcp-url` | MCP 服务 URL，默认为 http://localhost:8000 |
 
 #### 🔍 示例：生成嵌入向量
 
 ```bash
-# 📊 生成嵌入向量并以 JSON 格式输出
-../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --json
+# 📊 生成嵌入向量并以 JSON 格式输出（直接调用）
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --json
+
+# 📡 通过MCP生成嵌入向量
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口生成嵌入向量
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --use-mcp
 ```
 
 #### 🔬 示例：分类任务
 
 ```bash
-# 🧪 执行序列分类任务
-../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task classification
+# 🧪 执行序列分类任务（直接调用）
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task classification
+
+# 📡 通过MCP执行序列分类任务
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task classification --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口执行序列分类任务
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence "ATCGATCGATCGATCGATCG" --task classification --use-mcp
 ```
 
 ### 🧪 使用 RNA 工具包
@@ -193,36 +220,90 @@ RNA 工具包使用子命令结构，您可以通过以下命令查看所有可�
 ```bash
 # 📚 查看 RNA 工具包帮助
 cd /mnt/models/yigex/ToolUniverse/examples/bio_models
-../tooluniverse_env/bin/python rna_tools_cli.py --help
+../../tooluniverse_env/bin/python rna_tools_cli.py --help
 ```
+
+所有 RNA 工具都支持通过 MCP 调用，只需添加 `--use-mcp` 和可选的 `--mcp-url` 参数。
+
+#### ⚙️ MCP 调用参数
+
+| 参数 | 描述 | 默认值 |
+|------|------|--------|
+| `--use-mcp` | 是否通过 MCP 服务调用工具 | False |
+| `--mcp-url` | MCP 服务 URL | http://localhost:8080 |
 
 #### 🧬 RNA 二级结构预测
 
 ```bash
-# 🧬 预测 RNA 二级结构
-../tooluniverse_env/bin/python rna_tools_cli.py rna_fold --sequence "AUGGCCAUUGCAUUCAGAU" --json
+# 🧬 预测 RNA 二级结构（直接调用）
+../../tooluniverse_env/bin/python rna_tools_cli.py rna_fold --sequence "AUGGCCAUUGCAUUCAGAU" --json
+
+# 📡 通过MCP预测 RNA 二级结构
+../../tooluniverse_env/bin/python rna_tools_cli.py rna_fold --sequence "AUGGCCAUUGCAUUCAGAU" --json --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口预测RNA二级结构
+../../tooluniverse_env/bin/python rna_tools_cli.py rna_fold --sequence "AUGGCCAUUGCAUUCAGAU" --json --use-mcp
 ```
 
 #### 🔄 序列比较
 
 ```bash
-# 🔄 比较两个 RNA 序列
-../tooluniverse_env/bin/python rna_tools_cli.py seq_compare --seq1 "AUGGCCAUU" --seq2 "AUGGUCACU"
+# 🔄 比较两个 RNA 序列（直接调用）
+../../tooluniverse_env/bin/python rna_tools_cli.py seq_compare --seq1 "AUGGCCAUU" --seq2 "AUGGUCACU"
+
+# 📡 通过MCP比较两个 RNA 序列
+../../tooluniverse_env/bin/python rna_tools_cli.py seq_compare --seq1 "AUGGCCAUU" --seq2 "AUGGUCACU" --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口比较序列
+../../tooluniverse_env/bin/python rna_tools_cli.py seq_compare --seq1 "AUGGCCAUU" --seq2 "AUGGUCACU" --use-mcp
 ```
 
 #### 🔍 JASPAR Motif 扫描
 
 ```bash
-# 🔍 扫描序列中的 JASPAR Motif
-../tooluniverse_env/bin/python rna_tools_cli.py jaspar_scan --sequence "ATCGATCGATCGATCGATCG" --species 9606 --threshold 0.85 --top 10
+# 🔍 扫描序列中的 JASPAR Motif（直接调用）
+../../tooluniverse_env/bin/python rna_tools_cli.py jaspar_scan --sequence "ATCGATCGATCGATCGATCG" --species 9606 --threshold 0.85 --top 10
+
+# 📡 通过MCP扫描序列中的 JASPAR Motif
+../../tooluniverse_env/bin/python rna_tools_cli.py jaspar_scan --sequence "ATCGATCGATCGATCGATCG" --species 9606 --threshold 0.85 --top 10 --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口扫描Motif
+../../tooluniverse_env/bin/python rna_tools_cli.py jaspar_scan --sequence "ATCGATCGATCGATCGATCG" --species 9606 --threshold 0.85 --top 10 --use-mcp
 ```
 
 #### 🧬 BLAST 搜索
 
 ```bash
-# 🧬 执行 BLAST 序列搜索
-../tooluniverse_env/bin/python rna_tools_cli.py blast_search --sequence "ATCGATCGATCGATCGATCG" --program blastn --database nt --email user@example.com --max-results 10
+# 🧬 执行 BLAST 序列搜索（直接调用）
+../../tooluniverse_env/bin/python rna_tools_cli.py blast_search --sequence "ATCGATCGATCGATCGATCG" --program blastn --database nt --email user@example.com --max-results 10
+
+# 📡 通过MCP执行 BLAST 序列搜索
+../../tooluniverse_env/bin/python rna_tools_cli.py blast_search --sequence "ATCGATCGATCGATCGATCG" --program blastn --database nt --email user@example.com --max-results 10 --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口执行BLAST搜索
+../../tooluniverse_env/bin/python rna_tools_cli.py blast_search --sequence "ATCGATCGATCGATCGATCG" --program blastn --database nt --email user@example.com --max-results 10 --use-mcp
 ```
+
+#### 🔧 MCP 调用模式说明
+
+RNA 工具包支持两种调用模式：
+
+1. **直接调用模式**（默认）：
+   - 直接实例化工具类并调用相应方法
+   - 适合本地开发和测试
+   - 不需要启动 MCP 服务
+
+2. **MCP 调用模式**（使用 `--use-mcp` 参数）：
+   - 通过 MCP 服务间接调用工具
+   - 适合生产环境和分布式部署
+   - 需要先启动 MCP 服务
+   - 支持负载均衡和资源管理
+
+MCP 调用模式的优势：
+- 🔄 **负载均衡**：MCP 服务可以智能分配请求到不同的计算节点
+- 🛡️ **错误处理**：提供统一的错误处理和重试机制
+- 📊 **监控日志**：集中记录所有工具调用，便于监控和调试
+- 🔧 **配置管理**：统一管理工具配置，无需在每个客户端重复配置
 
 ## ⚡ 高级用法
 
@@ -231,11 +312,23 @@ cd /mnt/models/yigex/ToolUniverse/examples/bio_models
 对于大量序列的处理，可以使用 `--sequence-file` 参数或 `--sequences` 参数：
 
 ```bash
-# 📁 从文件批量处理序列
-../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence-file sequences.txt --task embedding --output results.json
+# 📁 从文件批量处理序列（直接调用）
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence-file sequences.txt --task embedding --output results.json
 
-# 📋 直接指定多个序列
-../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequences "ATCGATCG" "GCTAGCTA" "CGATCGAT" --task classification
+# 📡 通过MCP从文件批量处理序列
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence-file sequences.txt --task embedding --output results.json --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口从文件批量处理序列
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequence-file sequences.txt --task embedding --output results.json --use-mcp
+
+# 📋 直接指定多个序列（直接调用）
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequences "ATCGATCG" "GCTAGCTA" "CGATCGAT" --task classification
+
+# 📡 通过MCP直接指定多个序列
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequences "ATCGATCG" "GCTAGCTA" "CGATCGAT" --task classification --use-mcp --mcp-url http://localhost:8080
+
+# 📡 使用默认MCP端口直接指定多个序列
+../../tooluniverse_env/bin/python dnabert2_tool_cli.py --sequences "ATCGATCG" "GCTAGCTA" "CGATCGAT" --task classification --use-mcp
 ```
 
 ### 🛠️ 自定义 Docker 配置

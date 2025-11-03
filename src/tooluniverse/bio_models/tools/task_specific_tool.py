@@ -36,6 +36,12 @@ class TaskSpecificTool:
             current_dir = Path(__file__).parent.parent.parent.parent
             config_path = os.path.join(current_dir, "config", "bio_models", "model_config.json")
         
+        # 检查配置文件是否存在，如果不存在，尝试其他可能的路径
+        if not os.path.exists(config_path):
+            # 尝试从ToolUniverse根目录开始
+            current_dir = Path(__file__).parent.parent.parent.parent.parent
+            config_path = os.path.join(current_dir, "config", "bio_models", "model_config.json")
+        
         self.config_path = config_path
         self.config = self._load_config()
         
@@ -44,12 +50,12 @@ class TaskSpecificTool:
             "lucaone": LucaOneAppTool(),  # 使用LucaOneApp进行嵌入
             "lucaoneapp": LucaOneAppTool(),
             "lucaonetasks": LucaOneTasksTool(),
-            "3utrbert": ThreeUTRBERTTool(),
+            "3utrbert": ThreeUTRBERTTool(model_manager=self),
             "alphafold": AlphaFoldTool(),
             "codonbert": CodonBERTTool(),
             "dnabert_2": DNABERT2Tool(),
             "rna-fm": RNAFMTool(),
-            "utr-lm": UTRLMTool()
+            "utr-lm": UTRLMTool(model_manager=self)
         }
         
         # 记录已加载的模型

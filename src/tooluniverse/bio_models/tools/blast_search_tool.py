@@ -5,6 +5,14 @@ import os
 import logging
 from typing import Dict, List, Any, Optional, Union
 from Bio.Blast import NCBIWWW, NCBIXML
+from ...base_tool import BaseTool
+from ...exceptions import (
+    ToolError, 
+    ToolConfigError, 
+    ToolValidationError, 
+    ToolUnavailableError,
+    ToolServerError
+)
 from ..task_types import TaskType, SequenceType, DeviceType
 
 # 检查Biopython是否可用
@@ -16,7 +24,7 @@ except ImportError:
     logging.warning("无法导入Biopython库，请确保Biopython已安装")
 
 
-class BlastSearchTool:
+class BlastSearchTool(BaseTool):
     """BLAST搜索工具 - 用于NCBI序列比对搜索"""
     
     def __init__(self, config_path: Optional[str] = None):
@@ -26,12 +34,80 @@ class BlastSearchTool:
         Args:
             config_path: 配置文件路径（可选）
         """
+        # 初始化BaseTool
+        super().__init__({
+            "name": "blast_search",
+            "description": "BLAST序列比对搜索工具",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sequences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要搜索的序列列表"
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "任务类型",
+                        "default": "function_annotation"
+                    },
+                    "program": {
+                        "type": "string",
+                        "description": "BLAST程序类型 (blastn, blastp, blastx, tblastn, tblastx)",
+                        "default": "blastn"
+                    },
+                    "database": {
+                        "type": "string",
+                        "description": "搜索数据库 (nt, nr, refseq_rna等)",
+                        "default": "nt"
+                    },
+                    "email": {
+                        "type": "string",
+                        "description": "NCBI邮箱地址（必需）"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "返回的最大结果数",
+                        "default": 10
+                    },
+                    "expect_threshold": {
+                        "type": "number",
+                        "description": "E值阈值",
+                        "default": 0.001
+                    }
+                },
+                "required": ["sequences", "email"]
+            }
+        })
+        
         # 直接初始化必要的组件
         self.logger = logging.getLogger(__name__)
-        self.tool_name = "blast_search"
         
         # 缓存实例字典，根据参数组合缓存配置
         self.blast_configs = {}
+    
+    def handle_error(self, exception: Exception) -> ToolError:
+        """
+        处理工具执行过程中的错误
+        
+        Args:
+            exception: 异常对象
+            
+        Returns:
+            ToolError: 结构化的工具错误
+        """
+        error_str = str(exception).lower()
+        
+        if any(keyword in error_str for keyword in ["import", "module", "library", "biopython", "bio"]):
+            return ToolConfigError(f"BLAST库配置错误: {exception}")
+        elif any(keyword in error_str for keyword in ["sequence", "序列", "invalid", "无效"]):
+            return ToolValidationError(f"序列验证错误: {exception}")
+        elif any(keyword in error_str for keyword in ["network", "网络", "connection", "连接", "timeout", "超时"]):
+            return ToolUnavailableError(f"网络连接错误: {exception}")
+        elif any(keyword in error_str for keyword in ["blast", "search", "搜索"]):
+            return ToolServerError(f"BLAST搜索错误: {exception}")
+        else:
+            return ToolServerError(f"BLAST搜索工具错误: {exception}")
     
     def analyze(
         self,
@@ -173,7 +249,7 @@ class BlastSearchTool:
                 "success": True,
                 "results": results,
                 "metadata": {
-                    "tool": self.tool_name,
+                    "tool": self.tool_config.get("name"),
                     "task_type": task_type.value,
                     "sequence_count": len(sequences),
                     "device": "cpu",
@@ -224,7 +300,7 @@ class BlastSearchTool:
                 "results": results,
                 "match_count": len(results),
                 "metadata": {
-                    "tool": self.tool_name,
+                    "tool": self.tool_config.get("name"),
                     "xml_file": xml_file,
                     "max_results": max_results
                 }

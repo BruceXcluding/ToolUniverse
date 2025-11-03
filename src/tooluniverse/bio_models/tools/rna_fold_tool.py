@@ -4,6 +4,14 @@ RNA折叠工具 - 用于RNA二级结构预测
 import os
 import logging
 from typing import Dict, List, Any, Optional, Union
+from ...base_tool import BaseTool
+from ...exceptions import (
+    ToolError, 
+    ToolConfigError, 
+    ToolValidationError, 
+    ToolUnavailableError,
+    ToolServerError
+)
 from ..task_types import TaskType, SequenceType, DeviceType
 
 # 尝试导入RNA库
@@ -17,7 +25,7 @@ except ImportError:
     logging.warning("无法导入RNA库，请确保Vienna RNA Package已安装")
 
 
-class RNAFoldTool:
+class RNAFoldTool(BaseTool):
     """RNA折叠工具 - 用于RNA二级结构预测"""
     
     def __init__(self, config_path: Optional[str] = None):
@@ -27,13 +35,65 @@ class RNAFoldTool:
         Args:
             config_path: 配置文件路径（可选）
         """
+        # 初始化BaseTool
+        super().__init__({
+            "name": "rna_fold",
+            "description": "RNA二级结构预测工具",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sequences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "RNA序列或序列列表"
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "任务类型，应该是'rna_fold'",
+                        "default": "rna_fold"
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "温度（摄氏度）",
+                        "default": 37.0
+                    },
+                    "batch_size": {
+                        "type": "integer",
+                        "description": "批处理大小",
+                        "default": 10
+                    }
+                },
+                "required": ["sequences"]
+            }
+        })
+        
         # 直接初始化必要的组件
         self.logger = logging.getLogger(__name__)
-        self.tool_name = "rna_fold"
         
         # 设置RNA库参数（如果可用）
         if RNA_FOLD_AVAILABLE:
             RNA.cvar.temperature = 37.0  # 设置默认温度为37°C
+    
+    def handle_error(self, exception: Exception) -> ToolError:
+        """
+        处理工具执行过程中的错误
+        
+        Args:
+            exception: 异常对象
+            
+        Returns:
+            ToolError: 结构化的工具错误
+        """
+        error_str = str(exception).lower()
+        
+        if any(keyword in error_str for keyword in ["import", "module", "library", "库"]):
+            return ToolConfigError(f"RNA库配置错误: {exception}")
+        elif any(keyword in error_str for keyword in ["sequence", "序列", "invalid", "无效"]):
+            return ToolValidationError(f"序列验证错误: {exception}")
+        elif any(keyword in error_str for keyword in ["fold", "折叠", "structure", "结构"]):
+            return ToolServerError(f"RNA折叠错误: {exception}")
+        else:
+            return ToolServerError(f"RNA折叠工具错误: {exception}")
     
     def analyze(
         self,
