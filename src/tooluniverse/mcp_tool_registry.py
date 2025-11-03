@@ -227,10 +227,11 @@ def register_mcp_tool_from_config(tool_class: type, config: Dict[str, Any]):
     ```
     """
     name = config.get("name") or tool_class.__name__
-    tool_config = {k: v for k, v in config.items() if k != "mcp_config"}
+    # 从config中提取工具配置，但排除name和mcp_config字段
+    tool_config = {k: v for k, v in config.items() if k not in ["name", "mcp_config"]}
     mcp_config = config.get("mcp_config", {})
 
-    # Use the decorator to register for MCP only
+    # 使用装饰器注册MCP工具，将name作为tool_type_name参数传递
     register_mcp_tool(tool_type_name=name, config=tool_config, mcp_config=mcp_config)(
         tool_class
     )

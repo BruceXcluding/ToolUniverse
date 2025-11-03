@@ -7,10 +7,13 @@ DNABERT2 CLI工具
 DNABERT2是一个基于Transformer的预训练模型，专门为DNA序列设计，
 可生成768维的嵌入向量，这些向量可用于各种下游生物信息学任务。
 
-使用方法:
+使用方法(直接实例调用):
   python dnabert2_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding [--json]
   python dnabert2_cli.py --sequence-file sequences.txt --task embedding [--json]
   python dnabert2_cli.py --sequences "ATCGATCG" "GCTAGCTA" --task embedding [--json]
+
+使用方法(通过MCP调用):
+  python dnabert2_cli.py --sequence "ATCGATCGATCGATCGATCG" --task embedding --use-mcp [--mcp-url http://localhost:8000]
 
 参数说明:
   --sequence      单个DNA序列
@@ -20,15 +23,122 @@ DNABERT2是一个基于Transformer的预训练模型，专门为DNA序列设计�
   --json          以JSON格式输出结果
   --output        输出文件路径(默认输出到终端)
   --use-docker    是否使用Docker模式(默认:true)
+  --use-mcp       是否通过MCP服务调用工具(默认:false)
+  --mcp-url       MCP服务URL，默认 http://localhost:8000
 """
 
 import os
 import sys
+# 添加ToolUniverse源码路径到Python路径
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 import json
 import logging
 import time
 import numpy as np
 import argparse
+
+# MCP客户端相关导入
+def get_mcp_client(mcp_url=None, timeout=30):
+    """获取MCP客户端实例"""
+    try:
+        from tooluniverse.mcp_client_tool import MCPClientTool
+        # 使用正确的初始化方式，传入tool_config字典
+        # 确保使用与服务器匹配的URL - 8080是bio_mcp_server.py中使用的端口
+        server_url = mcp_url or "http://localhost:8080"
+        print(f"[DEBUG] 初始化MCP客户端，服务器URL: {server_url}")
+        print(f"[DEBUG] 传输类型: http")
+        print(f"[DEBUG] 超时设置: {timeout}秒")
+        
+        tool_config = {
+            "name": "dnabert2_mcp_client",
+            "description": "DNABERT2 MCP Client",
+            "server_url": server_url,
+            "transport": "http",
+            "timeout": timeout
+        }
+        
+        # 初始化客户端并打印更多信息
+        client = MCPClientTool(tool_config=tool_config)
+        print(f"[DEBUG] MCP客户端初始化完成")
+        return client
+    except ImportError as e:
+        print(f"[ERROR] 导入MCP客户端失败: {e}")
+        raise ImportError(f"无法导入MCP客户端: {e}")
+    except Exception as e:
+        print(f"[ERROR] 创建MCP客户端失败: {e}")
+        raise
+
+def call_mcp_tool(client, tool_name, arguments=None):
+    """通过MCP调用工具
+    
+    简化的MCP调用函数，添加详细的调试信息
+    """
+    try:
+        # 创建异步调用函数
+        async def _call_async():
+            try:
+                print(f"[DEBUG] 开始调用MCP工具: {tool_name}")
+                print(f"[DEBUG] 参数: {arguments}")
+                print(f"[DEBUG] 参数类型: {type(arguments)}")
+                
+                # 检查client对象的属性和方法
+                print(f"[DEBUG] client对象类型: {type(client)}")
+                print(f"[DEBUG] client对象属性: {dir(client)}")
+                
+                # 检查call_tool方法的源码
+                if hasattr(client, 'call_tool'):
+                    print(f"[DEBUG] client.call_tool方法存在: {hasattr(client, 'call_tool')}")
+                    print(f"[DEBUG] call_tool方法签名: {client.call_tool.__code__.co_varnames[:client.call_tool.__code__.co_argcount]}")
+                
+                # 关键点：根据MCP客户端的实现，我们需要直接传递arguments作为第二个参数
+                # 不需要额外嵌套，因为client.call_tool方法内部会将其包装在'arguments'字段中
+                print(f"[DEBUG] 执行client.call_tool()")
+                print(f"[DEBUG] 工具名称: {tool_name}")
+                print(f"[DEBUG] 参数: {arguments}")
+                
+                # 直接传递arguments作为第二个参数
+                result = await client.call_tool(tool_name, arguments)
+                
+                print(f"[DEBUG] MCP调用成功，返回类型: {type(result)}")
+                # 限制输出长度，避免过大的结果导致显示问题
+                result_str = str(result)[:500] + '...' if len(str(result)) > 500 else str(result)
+                print(f"[DEBUG] 返回结果示例: {result_str}")
+                return result
+            except Exception as e:
+                print(f"[DEBUG] MCP调用错误: {str(e)}")
+                print(f"[DEBUG] 错误类型: {type(e).__name__}")
+                # 获取详细错误信息
+                import traceback
+                error_stack = traceback.format_exc()
+                print(f"[DEBUG] 错误堆栈详情:")
+                print(error_stack)
+                
+                # 尝试提取更具体的错误信息
+                if hasattr(e, '__cause__') and e.__cause__:
+                    print(f"[DEBUG] 根本原因错误: {type(e.__cause__).__name__}: {str(e.__cause__)}")
+                
+                if hasattr(e, 'args'):
+                    print(f"[DEBUG] 错误参数: {e.args}")
+                    
+                raise
+            finally:
+                # 确保关闭会话
+                if hasattr(client, '_close_session'):
+                    try:
+                        await client._close_session()
+                        print(f"[DEBUG] MCP会话已关闭")
+                    except Exception as close_error:
+                        print(f"[DEBUG] 关闭MCP会话时出错: {str(close_error)}")
+        
+        # 运行异步函数
+        print(f"[DEBUG] 初始化异步调用")
+        import asyncio
+        return asyncio.run(_call_async())
+    except Exception as e:
+        print(f"[DEBUG] MCP调用错误详情: {str(e)}")
+        print(f"[DEBUG] 顶层错误类型: {type(e).__name__}")
+        # 重新抛出异常，保持原始错误信息
+        raise
 
 # 设置日志级别和格式
 logging.basicConfig(
@@ -98,6 +208,9 @@ def parse_arguments():
     parser.add_argument('--json', action='store_true', help='以JSON格式输出结果')
     parser.add_argument('--output', type=str, help='输出文件路径(默认输出到终端)')
     parser.add_argument('--use-docker', type=bool, default=True, help='是否使用Docker模式')
+    # MCP相关参数
+    parser.add_argument('--use-mcp', action='store_true', default=False, help='是否通过MCP服务调用工具')
+    parser.add_argument('--mcp-url', type=str, default='http://localhost:8080', help='MCP服务URL，默认 http://localhost:8080')
     
     return parser.parse_args()
 
@@ -156,93 +269,164 @@ def main():
     """
     DNABERT2 CLI工具主函数
     """
+    # 导入asyncio
+    import asyncio
+    
     # 解析命令行参数
     args = parse_arguments()
     
     logger = logging.getLogger("dnabert2_cli")
     logger.info("开始DNABERT2 CLI工具")
     
-    try:
-        # 导入DNABERT2工具（尝试不同的导入路径）
-        try:
-            from tooluniverse.bio_models.dnabert2_tool import DNABERT2Tool
-            logger.info("成功从tooluniverse.bio_models导入DNABERT2Tool")
-        except ImportError:
-            try:
-                from tooluniverse.bio_models.tools.dnabert2_tool import DNABERT2Tool
-                logger.info("成功从tooluniverse.bio_models.tools导入DNABERT2Tool")
-            except ImportError as e:
-                logger.error(f"无法导入DNABERT2Tool: {e}")
-                raise
-        
-        # 初始化工具实例
-        use_docker = args.use_docker
-        logger.info(f"初始化DNABERT2Tool实例 (use_docker={use_docker})")
-        
-        tool = DNABERT2Tool(use_docker=use_docker)
-        logger.info("DNABERT2Tool实例初始化成功")
-        
-        # 获取序列
+    # 获取序列
+    sequences = []
+    if args.sequence:
+        sequences = [args.sequence]
+    elif args.sequences:
+        # 处理逗号分隔的序列
         sequences = []
-        if args.sequence:
-            sequences = [args.sequence]
-        elif args.sequences:
-            sequences = args.sequences
-        elif args.sequence_file:
-            sequences = read_sequences_from_file(args.sequence_file)
-        
-        task_type = args.task
-        logger.info(f"处理任务类型: {task_type}, 序列数量: {len(sequences)}")
-        
-        # 处理序列
-        results = {}
-        
-        # 记录总开始时间
-        total_start_time = time.time()
-        
-        # 处理序列（使用真实的DNABERT2服务）
-        try:
-            if len(sequences) == 1:
-                sequence = sequences[0]
-                logger.info(f"处理序列: 长度={len(sequence)}nt")
+        for seq in args.sequences:
+            # 如果序列包含逗号，则分割
+            if ',' in seq:
+                sequences.extend([s.strip() for s in seq.split(',') if s.strip()])
+            else:
+                sequences.append(seq)
+    elif args.sequence_file:
+        sequences = read_sequences_from_file(args.sequence_file)
+    
+    task_type = args.task
+    logger.info(f"处理任务类型: {task_type}, 序列数量: {len(sequences)}")
+    
+    # 记录总开始时间
+    total_start_time = time.time()
+    
+    # 处理序列
+    results = {}
+    
+    try:
+        # 如果使用MCP模式
+        if args.use_mcp:
+            # 通过MCP调用
+            logger.info(f"通过MCP服务调用DNABERT2工具: http://127.0.0.1:8080")
+            
+            # 不使用嵌套的asyncio.run，直接同步调用
+            try:
+                from tooluniverse.mcp_client_tool import MCPClientTool
                 
+                # 根据Docker容器信息更新MCP客户端配置，使用正确的MCP服务端点
+                # 确保URL格式正确，不使用可能导致DNS解析问题的主机名
+                tool_config = {
+                    "name": "dnabert2_mcp_client",
+                    "server_url": "http://127.0.0.1:8080/mcp",  # 移除尾部斜杠以避免307重定向
+                    "transport": "http"
+                }
+                
+                client = MCPClientTool(tool_config=tool_config)
+                print(f"[DEBUG] MCP客户端已初始化")
+                
+                # 准备调用参数，使用tool_name而不是name
+                # 修改参数格式以匹配MCP服务器的期望
+                params = {
+                    "operation": "call_tool",
+                    "tool_name": "dnabert2",
+                    "tool_arguments": {  # 使用"tool_arguments"而不是"arguments"
+                        "sequences": sequences,  # 确保sequences是列表
+                        "task_type": task_type
+                    }
+                }
+                print(f"[DEBUG] 准备调用参数: {params}")
+                
+                # 使用client.run方法调用MCP工具
                 start_time = time.time()
-                result = tool.analyze(sequences=[sequence], task_type=task_type)
+                result = client.run(params)
+                print(f"[DEBUG] 调用成功，返回类型: {type(result)}")
                 processing_time = time.time() - start_time
                 
-                # 解析结果
-                parsed_result = parse_result(result, sequence, processing_time, task_type)
-                results["sequence"] = parsed_result
-                
-                logger.info(f"序列处理完成，耗时: {processing_time:.4f}秒")
-            else:
-                # 批量处理多个序列
-                logger.info("执行批量序列处理")
-                start_time = time.time()
-                
-                batch_result = tool.analyze(sequences=sequences, task_type=task_type)
-                batch_time = time.time() - start_time
-                
-                # 处理批量结果
-                sequence_count = len(sequences)
-                avg_time = batch_time / sequence_count if sequence_count > 0 else 0
-                
-                # 解析批量结果
-                batch_results = parse_batch_result(batch_result, sequences, batch_time, task_type)
-                results = batch_results
-                
-                logger.info(f"批量处理完成，处理了{sequence_count}个序列，总耗时: {batch_time:.4f}秒")
-        except Exception as e:
-            logger.error(f"处理过程中发生意外错误: {str(e)}")
-            results["error"] = str(e)
-            results["sequence_count"] = len(sequences)
+                # 处理结果
+                if len(sequences) == 1:
+                    # 单个序列处理
+                    sequence = sequences[0]
+                    logger.info(f"单个序列处理完成，耗时: {processing_time:.4f}秒")
+                    parsed_result = parse_result(result, sequence, processing_time, task_type)
+                    results["sequence"] = parsed_result
+                else:
+                    # 批量序列处理
+                    sequence_count = len(sequences)
+                    avg_time = processing_time / sequence_count if sequence_count > 0 else 0
+                    logger.info(f"批量处理完成，处理了{sequence_count}个序列，总耗时: {processing_time:.4f}秒")
+                    batch_results = parse_batch_result(result, sequences, processing_time, task_type)
+                    results = batch_results
+                    
+            except Exception as e:
+                logger.error(f"MCP处理过程中发生错误: {str(e)}")
+                results["error"] = f"MCP调用失败: {str(e)}"
+                results["sequence_count"] = len(sequences)
+        else:
+            # 直接实例调用
+            # 导入DNABERT2工具（尝试不同的导入路径）
+            try:
+                from tooluniverse.bio_models.dnabert2_tool import DNABERT2Tool
+                logger.info("成功从tooluniverse.bio_models导入DNABERT2Tool")
+            except ImportError:
+                try:
+                    from tooluniverse.bio_models.tools.dnabert2_tool import DNABERT2Tool
+                    logger.info("成功从tooluniverse.bio_models.tools导入DNABERT2Tool")
+                except ImportError as e:
+                    logger.error(f"无法导入DNABERT2Tool: {e}")
+                    raise
+            
+            # 初始化工具实例
+            use_docker = args.use_docker
+            logger.info(f"初始化DNABERT2Tool实例 (use_docker={use_docker})")
+            
+            tool = DNABERT2Tool(use_docker=use_docker)
+            logger.info("DNABERT2Tool实例初始化成功")
+            
+            # 处理序列（使用真实的DNABERT2服务）
+            try:
+                if len(sequences) == 1:
+                    sequence = sequences[0]
+                    logger.info(f"处理序列: 长度={len(sequence)}nt")
+                    
+                    start_time = time.time()
+                    result = tool.analyze(sequences=[sequence], task_type=task_type)
+                    processing_time = time.time() - start_time
+                    
+                    # 解析结果
+                    parsed_result = parse_result(result, sequence, processing_time, task_type)
+                    results["sequence"] = parsed_result
+                    
+                    logger.info(f"序列处理完成，耗时: {processing_time:.4f}秒")
+                else:
+                    # 批量处理多个序列
+                    logger.info("执行批量序列处理")
+                    start_time = time.time()
+                    
+                    batch_result = tool.analyze(sequences=sequences, task_type=task_type)
+                    batch_time = time.time() - start_time
+                    
+                    # 处理批量结果
+                    sequence_count = len(sequences)
+                    avg_time = batch_time / sequence_count if sequence_count > 0 else 0
+                    
+                    # 解析批量结果
+                    batch_results = parse_batch_result(batch_result, sequences, batch_time, task_type)
+                    results = batch_results
+                    
+                    logger.info(f"批量处理完成，处理了{sequence_count}个序列，总耗时: {batch_time:.4f}秒")
+            except Exception as e:
+                logger.error(f"处理过程中发生意外错误: {str(e)}")
+                results["error"] = str(e)
+                results["sequence_count"] = len(sequences)
         
         total_time = time.time() - total_start_time
         results["metadata"] = {
             "total_processing_time": total_time,
             "sequence_count": len(sequences),
             "task_type": task_type,
-            "use_docker": use_docker
+            "use_docker": args.use_docker,
+            "use_mcp": args.use_mcp,
+            "mcp_url": args.mcp_url if args.use_mcp else None
         }
         
         # 输出结果
@@ -281,8 +465,7 @@ def main():
         sys.exit(1)
 
 def parse_result(result, sequence, processing_time, task_type='embedding'):
-    """
-    解析单个序列的结果
+    """解析单个序列的结果
     
     Args:
         result: API返回的结果
@@ -293,119 +476,152 @@ def parse_result(result, sequence, processing_time, task_type='embedding'):
     Returns:
         解析后的结果字典
     """
+    logger = logging.getLogger("dnabert2_cli")
+    logger.info(f"MCP返回的原始结果: {result}")
+    
     try:
         # 处理实际API返回的结果格式
         if isinstance(result, dict):
-                    if result.get('success') is True:
-                        # 根据任务类型处理不同的结果格式
-                        if task_type == 'embedding':
-                            # 嵌入任务 - 寻找embedding相关字段
-                            if isinstance(result.get('results'), list) and result['results']:
-                                first_result = result['results'][0]
-                                if isinstance(first_result, dict) and 'embedding' in first_result:
-                                    embedding = first_result['embedding']
-                                    return extract_embedding_info(embedding, sequence, processing_time, result)
-                                elif isinstance(first_result, dict):
-                                    return {
-                                        "sequence": sequence,
-                                        "length": len(sequence),
-                                        "processing_time": processing_time,
-                                        "error": f"结果中不包含embedding字段，可用字段: {list(first_result.keys())}",
-                                        "raw_result": result
-                                    }
-                                else:
-                                    return {
-                                        "sequence": sequence,
-                                        "length": len(sequence),
-                                        "processing_time": processing_time,
-                                        "error": f"结果项类型不是字典: {type(first_result).__name__}",
-                                        "raw_result": result
-                                    }
-                            elif 'embedding' in result:
-                                # 某些API可能直接返回embedding字段
-                                return extract_embedding_info(result['embedding'], sequence, processing_time, result)
-                            else:
-                                return {
-                                    "sequence": sequence,
-                                    "length": len(sequence),
-                                    "processing_time": processing_time,
-                                    "error": f"结果中找不到有效嵌入信息，可用字段: {list(result.keys())}",
-                                    "raw_result": result
-                                }
-                        elif task_type in ['prediction', 'classification']:
-                            # 预测或分类任务
-                            if isinstance(result.get('results'), list) and result['results']:
-                                first_result = result['results'][0]
-                                if isinstance(first_result, dict):
-                                    # 提取预测或分类结果
-                                    return {
-                                        "sequence": sequence,
-                                        "length": len(sequence),
-                                        "processing_time": processing_time,
-                                        "prediction": first_result,
-                                        "raw_result": result
-                                    }
-                                else:
-                                    return {
-                                        "sequence": sequence,
-                                        "length": len(sequence),
-                                        "processing_time": processing_time,
-                                        "error": f"结果项类型不是字典: {type(first_result).__name__}",
-                                        "raw_result": result
-                                    }
-                            else:
-                                return {
-                                    "sequence": sequence,
-                                    "length": len(sequence),
-                                    "processing_time": processing_time,
-                                    "error": f"预测结果格式不符合预期，可用字段: {list(result.keys())}",
-                                    "raw_result": result
-                                }
-                        else:
-                            # 其他任务类型
+            # 详细记录结果的键值
+            logger.info(f"结果类型: dict, 键: {list(result.keys())}")
+            
+            # 检查是否有错误标志
+            if result.get('isError') is True:
+                # 尝试从content字段提取错误信息
+                error_msg = "未知错误"
+                if 'content' in result and isinstance(result['content'], list) and result['content']:
+                    for item in result['content']:
+                        if isinstance(item, dict) and 'text' in item:
+                            error_msg = item['text']
+                            break
+                logger.warning(f"检测到错误: {error_msg}")
+                return {
+                    "sequence": sequence,
+                    "length": len(sequence),
+                    "processing_time": processing_time,
+                    "error": error_msg,
+                    "raw_result": result
+                }
+            
+            # 尝试从content字段解析实际结果
+            actual_result = None
+            if 'content' in result and isinstance(result['content'], list) and result['content']:
+                for item in result['content']:
+                    if isinstance(item, dict) and 'text' in item:
+                        try:
+                            # 尝试解析文本中的JSON
+                            actual_result = json.loads(item['text'])
+                            break
+                        except json.JSONDecodeError:
+                            logger.warning("无法解析content中的JSON")
+                            continue
+            
+            # 如果成功解析了实际结果，使用它来处理
+            if actual_result:
+                result = actual_result
+                logger.info(f"成功解析content中的JSON，新结果类型: {type(result)}")
+                if isinstance(result, dict):
+                    logger.info(f"新结果键: {list(result.keys())}")
+            
+            if result.get('success') is True:
+                logger.info("结果success标志为True")
+                # 根据任务类型处理不同的结果格式
+                if task_type == 'embedding':
+                    # 嵌入任务 - 寻找embedding相关字段
+                    if isinstance(result.get('results'), list) and result['results']:
+                        first_result = result['results'][0]
+                        if isinstance(first_result, dict) and 'embedding' in first_result:
+                            embedding = first_result['embedding']
+                            return extract_embedding_info(embedding, sequence, processing_time, result)
+                        elif isinstance(first_result, dict):
+                            logger.warning(f"结果不包含embedding字段，包含的字段: {list(first_result.keys())}")
                             return {
                                 "sequence": sequence,
                                 "length": len(sequence),
                                 "processing_time": processing_time,
-                                "result": result,
+                                "error": f"结果中不包含embedding字段，可用字段: {list(first_result.keys())}",
+                                "raw_result": result
+                            }
+                        else:
+                            logger.warning(f"结果项类型不是字典: {type(first_result).__name__}")
+                            return {
+                                "sequence": sequence,
+                                "length": len(sequence),
+                                "processing_time": processing_time,
+                                "error": f"结果项类型不是字典: {type(first_result).__name__}",
+                                "raw_result": result
+                            }
+                    elif 'embedding' in result:
+                        # 某些API可能直接返回embedding字段
+                        return extract_embedding_info(result['embedding'], sequence, processing_time, result)
+                    else:
+                        logger.warning(f"结果中找不到有效嵌入信息，可用字段: {list(result.keys())}")
+                        return {
+                            "sequence": sequence,
+                            "length": len(sequence),
+                            "processing_time": processing_time,
+                            "error": f"结果中找不到有效嵌入信息，可用字段: {list(result.keys())}",
+                            "raw_result": result
+                        }
+                elif task_type in ['prediction', 'classification']:
+                    # 预测或分类任务
+                    if isinstance(result.get('results'), list) and result['results']:
+                        first_result = result['results'][0]
+                        if isinstance(first_result, dict):
+                            # 提取预测或分类结果
+                            return {
+                                "sequence": sequence,
+                                "length": len(sequence),
+                                "processing_time": processing_time,
+                                "prediction": first_result,
+                                "raw_result": result
+                            }
+                        else:
+                            return {
+                                "sequence": sequence,
+                                "length": len(sequence),
+                                "processing_time": processing_time,
+                                "error": f"结果项类型不是字典: {type(first_result).__name__}",
                                 "raw_result": result
                             }
                     else:
-                        # 失败的情况
-                        error_msg = result.get('error', '未知错误')
-                        # 特殊处理常见错误
-                        if "'DNABERT2Client' object has no attribute" in str(error_msg):
-                            return {
-                                "sequence": sequence,
-                                "length": len(sequence),
-                                "processing_time": processing_time,
-                                "error": f"功能不支持: {error_msg}\n提示: 当前DNABERT2实现可能不支持所选的'{task_type}'任务",
-                                "raw_result": result
-                            }
-                        else:
-                            return {
-                                "sequence": sequence,
-                                "length": len(sequence),
-                                "processing_time": processing_time,
-                                "error": f"成功标志为False，错误信息: {error_msg}",
-                                "raw_result": result
-                            }
+                        return {
+                            "sequence": sequence,
+                            "length": len(sequence),
+                            "processing_time": processing_time,
+                            "error": "结果中没有找到有效的结果列表",
+                            "raw_result": result
+                        }
+            else:
+                logger.warning(f"结果success标志不为True，success值: {result.get('success')}")
+                error_msg = result.get('error', '未知错误')
+                logger.warning(f"错误信息: {error_msg}")
+                return {
+                    "sequence": sequence,
+                    "length": len(sequence),
+                    "processing_time": processing_time,
+                    "error": error_msg,
+                    "raw_result": result
+                }
         else:
+            logger.warning(f"结果类型不是字典: {type(result).__name__}")
             return {
                 "sequence": sequence,
                 "length": len(sequence),
                 "processing_time": processing_time,
-                "error": f"返回类型不是字典: {type(result).__name__}",
+                "error": f"结果类型不是字典: {type(result).__name__}",
                 "raw_result": result
             }
     except Exception as e:
+        logger.error(f"解析结果时发生错误: {str(e)}")
         return {
             "sequence": sequence,
             "length": len(sequence),
             "processing_time": processing_time,
-            "error": f"处理结果时发生错误: {str(e)}",
-            "raw_result": result
+            "error": f"解析结果错误: {str(e)}",
+            "raw_result": result if result is not None else None
         }
+
 
 def parse_batch_result(batch_result, sequences, processing_time, task_type='embedding'):
     """
@@ -427,6 +643,22 @@ def parse_batch_result(batch_result, sequences, processing_time, task_type='embe
     }
     
     try:
+        # 尝试从content字段解析实际结果（MCP格式）
+        actual_result = None
+        if isinstance(batch_result, dict) and 'content' in batch_result and isinstance(batch_result['content'], list) and batch_result['content']:
+            for item in batch_result['content']:
+                if isinstance(item, dict) and 'text' in item:
+                    try:
+                        # 尝试解析文本中的JSON
+                        actual_result = json.loads(item['text'])
+                        break
+                    except json.JSONDecodeError:
+                        continue
+        
+        # 如果成功解析了实际结果，使用它来处理
+        if actual_result:
+            batch_result = actual_result
+        
         if isinstance(batch_result, dict):
             if batch_result.get('success') is True:
                 if 'results' in batch_result and isinstance(batch_result['results'], list):

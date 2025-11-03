@@ -14,6 +14,8 @@ from ..task_types import TaskType, SequenceType, DeviceType, ModelStatus
 from ..models.base_model import BaseModel
 from ..monitoring import metrics_collector, monitor_performance
 from ..utils.validation import validate_sequences, validate_parameters
+from tooluniverse.base_tool import BaseTool
+from tooluniverse.tool_registry import register_tool
 
 # 尝试导入torch和GPU监控相关库
 torch_available = False
@@ -35,7 +37,7 @@ class DNABERT2Model(BaseModel):
         super().__init__("dnabert2", config)
         self.model_path = config.get("model_path", "/mnt/models/yigex/3rdparty/DNABERT_2")
         self.max_sequence_length = config.get("max_sequence_length", 512)
-        self.api_endpoint = config.get("api_endpoint", "http://dnabert2-server:8001")
+        self.api_endpoint = config.get("api_endpoint", "http://localhost:8001")
         self.use_docker = config.get("use_docker", True)
         
         # 设置支持的序列类型和任务类型
@@ -560,17 +562,31 @@ class DNABERT2Model(BaseModel):
             return {"error": error_msg}
 
 
-class DNABERT2Tool:
+@register_tool("dnabert2", config={
+    "model_name": "dnabert2",
+    "model_path": "/mnt/models/yigex/3rdparty/DNABERT_2",
+    "api_endpoint": "http://localhost:8001",
+    "use_docker": True,
+    "supported_tasks": ["embedding", "classification"],
+    "supported_sequences": ["DNA"],
+    "memory_requirement": 4096,
+    "max_sequence_length": 512
+})
+class DNABERT2Tool(BaseTool):
     """DNABERT2模型工具"""
     
-    def __init__(self, config_path: Optional[str] = None, use_docker: bool = True):
+    def __init__(self, config_path: Optional[str] = None, use_docker: bool = True, tool_config=None):
         """
         初始化DNABERT2工具
         
         Args:
             config_path: 配置文件路径
             use_docker: 是否使用Docker容器
+            tool_config: 工具配置
         """
+        # 初始化BaseTool
+        super().__init__(tool_config or {})
+        
         self.logger = logging.getLogger(__name__)
         self.logger.info("初始化DNABERT2Tool")
         self.model_manager = ModelManager(config_path)
@@ -593,8 +609,48 @@ class DNABERT2Tool:
             self.model_manager.register_model(DNABERT2Model(dnabert2_config))
             self.logger.info("DNABERT2模型注册成功")
         except Exception as e:
-            self.logger.error(f"注册DNABERT2模型失败: {str(e)}")
-            raise
+            self.logger.warning(f"注册DNABERT2模型失败: {str(e)}")
+            # 不再抛出异常，而是记录警告并继续
+            # 这样可以避免在工具初始化时失败
+    
+    def run(self, arguments=None, stream_callback=None, use_cache=False, validate=True, **kwargs):
+        """
+        执行DNABERT2分析
+        
+        Args:
+            arguments: 参数字典，包含sequences和task_type等参数
+            stream_callback: 流式回调函数
+            use_cache: 是否使用缓存
+            validate: 是否验证参数
+            **kwargs: 其他参数
+            
+        Returns:
+            Dict[str, Any]: 分析结果
+        """
+        # 处理参数字典格式
+        if arguments is None:
+            arguments = {}
+        
+        # 如果arguments是字典，提取参数
+        if isinstance(arguments, dict):
+            sequences = arguments.get("sequences")
+            task_type = arguments.get("task_type")
+            device = arguments.get("device", "AUTO")
+            monitor_mode = arguments.get("monitor_mode", False)
+        else:
+            # 如果不是字典，可能是旧的调用方式，直接使用参数
+            sequences = arguments
+            task_type = kwargs.get("task_type")
+            device = kwargs.get("device", "AUTO")
+            monitor_mode = kwargs.get("monitor_mode", False)
+        
+        # 调用analyze方法
+        return self.analyze(
+            sequences=sequences,
+            task_type=task_type,
+            device=device,
+            monitor_mode=monitor_mode
+        )
         
     @monitor_performance(model_name="dnabert2", task_type="analyze")
     def analyze(
